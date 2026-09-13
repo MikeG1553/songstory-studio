@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 
 @dataclass
@@ -22,24 +22,36 @@ class Scene:
     camera: str
     mood: str
     transition: str
+    section: str = ""
+    pexels_query: str = ""
 
     @property
     def duration(self) -> float:
         return max(0.1, self.end - self.start)
 
     def as_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["duration"] = round(self.duration, 2)
-        return d
+        data = asdict(self)
+        data["duration"] = round(self.duration, 2)
+        return data
 
 
 def ffprobe_duration(path: str | Path) -> float:
     cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(path)
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
     ]
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True).strip()
+        out = subprocess.check_output(
+            cmd,
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip()
         return float(out)
     except Exception:
         return 0.0
@@ -48,85 +60,502 @@ def ffprobe_duration(path: str | Path) -> float:
 def extract_lyrics(uploaded_file) -> str:
     if not uploaded_file:
         return ""
+
     suffix = Path(uploaded_file.name).suffix.lower()
     raw = uploaded_file.getvalue()
+
     if suffix in {".txt", ".md"}:
         return raw.decode("utf-8", errors="replace")
+
     if suffix == ".docx":
         from docx import Document
-        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
-            f.write(raw)
-            tmp = f.name
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".docx",
+            delete=False,
+        ) as file_obj:
+            file_obj.write(raw)
+            tmp = file_obj.name
+
         try:
             doc = Document(tmp)
-            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            return "\n".join(
+                paragraph.text
+                for paragraph in doc.paragraphs
+                if paragraph.text.strip()
+            )
         finally:
             os.unlink(tmp)
+
     return ""
 
 
+_SECTION_RE = re.compile(
+    r"""
+    ^\s*
+    (?:
+        \[(?P<bracket>[^\]]+)\]
+        |
+        (?P<plain>
+            (?:
+                verse(?:\s+\d+)?|
+                chorus(?:\s+\d+)?|
+                pre[-\s]?chorus(?:\s+\d+)?|
+                bridge(?:\s+\d+)?|
+                intro|
+                outro|
+                refrain|
+                interlude|
+                instrumental(?:\s+(?:break|solo))?|
+                guitar\s+solo|
+                piano\s+solo|
+                solo
+            )
+        )\s*:?
+    )
+    \s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _clean_section_name(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return "Song"
+    return cleaned
+
+
+def parse_lyrics_sections(lyrics: str) -> list[dict[str, Any]]:
+    """Preserve Verse/Chorus/Bridge/Instrumental labels and their lyric lines."""
+    sections: list[dict[str, Any]] = []
+    current = {
+        "label": "Song",
+        "lines": [],
+    }
+
+    for raw_line in lyrics.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+
+        if not line:
+            continue
+
+        match = _SECTION_RE.match(line)
+
+        if match:
+            if current["lines"] or current["label"] != "Song":
+                sections.append(current)
+
+            label = (
+                match.group("bracket")
+                or match.group("plain")
+                or "Song"
+            )
+
+            current = {
+                "label": _clean_section_name(label),
+                "lines": [],
+            }
+            continue
+
+        current["lines"].append(line)
+
+    if current["lines"] or current["label"] != "Song":
+        sections.append(current)
+
+    if not sections:
+        sections = [
+            {
+                "label": "Song",
+                "lines": ["Instrumental passage"],
+            }
+        ]
+
+    return sections
+
+
 def compact_lyrics(lyrics: str) -> list[str]:
-    lines = []
-    for line in lyrics.splitlines():
-        s = re.sub(r"\s+", " ", line).strip()
-        if not s:
-            continue
-        if re.fullmatch(r"\[?(verse|chorus|bridge|intro|outro|pre-chorus).*?\]?", s, re.I):
-            continue
-        lines.append(s)
+    """Backward-compatible helper that keeps lyric text but excludes section labels."""
+    lines: list[str] = []
+
+    for section in parse_lyrics_sections(lyrics):
+        lines.extend(section["lines"])
+
     return lines
 
 
-def heuristic_storyboard(lyrics: str, duration: float, target_scene_seconds: float = 7.0) -> dict[str, Any]:
-    lines = compact_lyrics(lyrics)
-    scene_count = max(6, min(48, math.ceil((duration or 180) / target_scene_seconds)))
-    step = (duration or scene_count * target_scene_seconds) / scene_count
-    if not lines:
-        lines = ["Instrumental passage"] * scene_count
+_STOPWORDS = {
+    "a", "about", "after", "again", "against", "all", "am", "an", "and", "any",
+    "are", "as", "at", "be", "because", "been", "before", "being", "below", "between",
+    "both", "but", "by", "can", "could", "did", "do", "does", "doing", "down", "during",
+    "each", "few", "for", "from", "further", "had", "has", "have", "having", "he", "her",
+    "here", "hers", "herself", "him", "himself", "his", "how", "i", "if", "in", "into",
+    "is", "it", "its", "itself", "just", "me", "more", "most", "my", "myself", "no",
+    "nor", "not", "now", "of", "off", "on", "once", "only", "or", "other", "our",
+    "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so", "some",
+    "such", "than", "that", "the", "their", "theirs", "them", "themselves", "then",
+    "there", "these", "they", "this", "those", "through", "to", "too", "under", "until",
+    "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who",
+    "whom", "why", "will", "with", "you", "your", "yours", "yourself", "yourselves",
+    "oh", "ooh", "yeah", "hey",
+}
 
-    scenes = []
-    for i in range(scene_count):
-        start = i * step
-        end = min((i + 1) * step, duration or (i + 1) * step)
-        excerpt = lines[min(len(lines) - 1, math.floor(i * len(lines) / scene_count))]
-        visual = (
-            f"Cinematic interpretation of: {excerpt}. Build a coherent recurring world, "
-            "natural human emotion, purposeful composition, no on-screen text."
+_ABSTRACT_WORDS = {
+    "soul", "heart", "love", "hope", "dream", "dreams", "pain", "time", "life",
+    "feeling", "feel", "spirit", "forever", "memory", "memories", "truth", "way",
+}
+
+
+def make_pexels_query(text: str, section: str = "") -> str:
+    """Create a short, concrete stock-footage search phrase."""
+    words = re.findall(
+        r"[A-Za-z][A-Za-z'-]*",
+        text.lower(),
+    )
+
+    chosen: list[str] = []
+
+    for word in words:
+        word = word.strip("'")
+
+        if len(word) < 3:
+            continue
+
+        if word in _STOPWORDS or word in _ABSTRACT_WORDS:
+            continue
+
+        if word not in chosen:
+            chosen.append(word)
+
+        if len(chosen) >= 5:
+            break
+
+    section_lower = section.lower()
+
+    if not chosen:
+        if "intro" in section_lower:
+            chosen = ["open", "road", "sunset"]
+        elif "outro" in section_lower:
+            chosen = ["quiet", "landscape", "dusk"]
+        elif "instrumental" in section_lower or "solo" in section_lower:
+            chosen = ["atmospheric", "road", "landscape", "dusk"]
+        elif "chorus" in section_lower or "refrain" in section_lower:
+            chosen = ["emotional", "person", "outdoors", "sunset"]
+        elif "bridge" in section_lower:
+            chosen = ["solitary", "person", "window", "rain"]
+        else:
+            chosen = ["cinematic", "person", "rural", "landscape"]
+
+    return " ".join(chosen[:6])
+
+
+def _target_scene_count(
+    duration: float,
+    section_count: int,
+) -> int:
+    """Aim for about 12–16 meaningful sequences for a typical full song."""
+    estimated = round(
+        max(duration, 180.0) / 16.0
+    )
+
+    target = max(
+        10,
+        min(16, estimated),
+    )
+
+    return max(
+        section_count,
+        target,
+    )
+
+
+def _allocate_scene_counts(
+    sections: list[dict[str, Any]],
+    target_count: int,
+) -> list[int]:
+    section_count = len(sections)
+
+    if section_count == 0:
+        return []
+
+    counts = [1] * section_count
+    remaining = max(
+        0,
+        target_count - section_count,
+    )
+
+    if remaining == 0:
+        return counts
+
+    weights = []
+
+    for section in sections:
+        line_count = len(section.get("lines", []))
+
+        if line_count:
+            weights.append(
+                max(1, line_count)
+            )
+        else:
+            weights.append(2)
+
+    total_weight = sum(weights) or 1
+
+    raw_extras = [
+        remaining * weight / total_weight
+        for weight in weights
+    ]
+
+    floor_extras = [
+        math.floor(value)
+        for value in raw_extras
+    ]
+
+    for index, extra in enumerate(floor_extras):
+        counts[index] += extra
+
+    leftover = remaining - sum(floor_extras)
+
+    ranked = sorted(
+        range(section_count),
+        key=lambda i: (
+            raw_extras[i] - floor_extras[i],
+            weights[i],
+        ),
+        reverse=True,
+    )
+
+    for index in ranked[:leftover]:
+        counts[index] += 1
+
+    return counts
+
+
+def _chunk_section_lines(
+    lines: list[str],
+    count: int,
+    section_label: str,
+) -> list[str]:
+    if count <= 0:
+        return []
+
+    if not lines:
+        return [
+            f"{section_label} instrumental passage"
+            for _ in range(count)
+        ]
+
+    chunks: list[str] = []
+
+    for index in range(count):
+        start = math.floor(
+            index * len(lines) / count
         )
-        scenes.append(Scene(
-            scene=i + 1,
-            start=round(start, 2),
-            end=round(end, 2),
-            lyric_excerpt=excerpt,
-            purpose="Advance the emotional story of the song.",
-            visual=visual,
-            camera="Slow cinematic movement; vary wide, medium, and close shots.",
-            mood="Match the emotional intensity of this lyric.",
-            transition="Cut or soft dissolve on the musical phrase.",
-        ).as_dict())
+        end = math.floor(
+            (index + 1) * len(lines) / count
+        )
+
+        if end <= start:
+            end = min(
+                len(lines),
+                start + 1,
+            )
+
+        excerpt = " ".join(
+            lines[start:end]
+        ).strip()
+
+        if not excerpt:
+            excerpt = lines[
+                min(
+                    start,
+                    len(lines) - 1,
+                )
+            ]
+
+        chunks.append(excerpt)
+
+    return chunks
+
+
+def heuristic_storyboard(
+    lyrics: str,
+    duration: float,
+    target_scene_seconds: float = 16.0,
+) -> dict[str, Any]:
+    """Build a section-aware local storyboard without an AI API call."""
+    sections = parse_lyrics_sections(
+        lyrics
+    )
+
+    target_count = _target_scene_count(
+        duration,
+        len(sections),
+    )
+
+    counts = _allocate_scene_counts(
+        sections,
+        target_count,
+    )
+
+    planned: list[dict[str, str]] = []
+
+    for section, count in zip(
+        sections,
+        counts,
+    ):
+        label = section["label"]
+
+        excerpts = _chunk_section_lines(
+            section.get("lines", []),
+            count,
+            label,
+        )
+
+        for excerpt in excerpts:
+            query = make_pexels_query(
+                excerpt,
+                label,
+            )
+
+            visual = (
+                f"{label}: {excerpt}. "
+                f"Grounded cinematic scene built around: {query}. "
+                "Keep recurring people and locations visually consistent. "
+                "No on-screen text and no lip sync."
+            )
+
+            planned.append(
+                {
+                    "section": label,
+                    "excerpt": excerpt,
+                    "query": query,
+                    "visual": visual,
+                }
+            )
+
+    scene_count = len(planned)
+
+    step = (
+        (duration or scene_count * target_scene_seconds)
+        / max(scene_count, 1)
+    )
+
+    scenes: list[dict[str, Any]] = []
+
+    for index, plan in enumerate(
+        planned,
+        start=1,
+    ):
+        start = (index - 1) * step
+        end = min(
+            index * step,
+            duration or index * step,
+        )
+
+        section_lower = plan["section"].lower()
+
+        if (
+            "chorus" in section_lower
+            or "refrain" in section_lower
+        ):
+            purpose = (
+                "Return to the video's strongest recurring emotional motif."
+            )
+        elif (
+            "instrumental" in section_lower
+            or "solo" in section_lower
+        ):
+            purpose = (
+                "Let the visuals breathe and extend the established world."
+            )
+        elif "outro" in section_lower:
+            purpose = (
+                "Resolve the visual story and leave a final emotional image."
+            )
+        else:
+            purpose = (
+                "Advance the visual story of this song section."
+            )
+
+        scenes.append(
+            Scene(
+                scene=index,
+                start=round(start, 2),
+                end=round(end, 2),
+                lyric_excerpt=plan["excerpt"],
+                purpose=purpose,
+                visual=plan["visual"],
+                camera=(
+                    "Natural cinematic movement; use wide, medium, "
+                    "and close shots as appropriate."
+                ),
+                mood=(
+                    "Match this section's emotional intensity "
+                    "while preserving continuity."
+                ),
+                transition=(
+                    "Cut or soft dissolve on the musical phrase."
+                ),
+                section=plan["section"],
+                pexels_query=plan["query"],
+            ).as_dict()
+        )
 
     return {
-        "concept": "A coherent cinematic interpretation of the song, built from the lyric progression.",
-        "mood": "Emotion follows the lyrical arc and musical pacing.",
-        "visual_style": "Cinematic, naturalistic, consistent characters and locations.",
-        "story_arc": "Establish → develop → emotional peak → resolution.",
+        "concept": (
+            "A coherent cinematic interpretation organized around the song's "
+            "actual sections, with recurring people, places, and visual motifs."
+        ),
+        "mood": (
+            "Emotion follows the verse/chorus/bridge/instrumental progression."
+        ),
+        "visual_style": (
+            "Cinematic, naturalistic, consistent characters and locations; "
+            "no lip sync unless explicitly requested."
+        ),
+        "story_arc": (
+            "Establish → develop through verses → reinforce choruses → "
+            "shift at bridge/instrumental → resolve in final chorus/outro."
+        ),
         "scenes": scenes,
-        "source": "local-fallback",
+        "source": "local-section-aware-v0.4",
     }
 
 
 def _extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
+
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?", "", text, flags=re.I).strip()
-        text = re.sub(r"```$", "", text).strip()
+        text = re.sub(
+            r"^```(?:json)?",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        text = re.sub(
+            r"```$",
+            "",
+            text,
+        ).strip()
+
     try:
         return json.loads(text)
+
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.S)
+        match = re.search(
+            r"\{.*\}",
+            text,
+            re.DOTALL,
+        )
+
         if not match:
             raise
-        return json.loads(match.group(0))
+
+        return json.loads(
+            match.group(0)
+        )
 
 
 def ai_storyboard(
@@ -140,22 +569,48 @@ def ai_storyboard(
 ) -> dict[str, Any]:
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key)
-    scene_count = max(8, min(48, math.ceil(max(duration, 120) / 7.0)))
+    client = OpenAI(
+        api_key=api_key
+    )
+
+    sections = parse_lyrics_sections(
+        lyrics
+    )
+
+    target_scene_count = _target_scene_count(
+        duration,
+        len(sections),
+    )
+
+    section_summary = "\n".join(
+        f"[{section['label']}]\n"
+        + (
+            "\n".join(section["lines"])
+            if section["lines"]
+            else "(instrumental)"
+        )
+        for section in sections
+    )
 
     prompt = f"""
 You are the creative director for a professional music video.
-Analyze the complete song lyrics as a whole before planning individual shots.
-The video must feel like one coherent film, not disconnected literal illustrations.
+
+Analyze the complete song as a coherent film.
+Respect the song's actual labeled structure: verses, choruses, bridges,
+instrumental breaks, solos, intros, and outros.
+
+Do NOT create a new shot every few seconds.
+Create approximately {target_scene_count} meaningful visual sequences for the
+entire song. Usually 12–16 sequences is enough for a full-length song.
 
 SONG DURATION: {duration:.1f} seconds
-TARGET SCENES: approximately {scene_count}
+TARGET VISUAL SEQUENCES: approximately {target_scene_count}
 VISUAL STYLE: {style}
 INTERPRETATION MODE: {interpretation}
 ASPECT RATIO: {aspect_ratio}
 
-LYRICS:
-{lyrics}
+STRUCTURED LYRICS:
+{section_summary}
 
 Return ONLY valid JSON with this exact top-level structure:
 {{
@@ -166,68 +621,215 @@ Return ONLY valid JSON with this exact top-level structure:
   "scenes": [
     {{
       "scene": 1,
+      "section": "Verse 1",
       "start": 0.0,
-      "end": 6.0,
+      "end": 14.0,
       "lyric_excerpt": "short relevant excerpt or instrumental",
-      "purpose": "why this shot exists in the story",
-      "visual": "detailed prompt suitable for a text-to-video model; no on-screen text",
+      "purpose": "why this sequence exists in the story",
+      "visual": "detailed visual concept for the user; no on-screen text and no lip sync",
+      "pexels_query": "short concrete stock footage search phrase",
       "camera": "camera/framing/movement",
       "mood": "scene mood",
-      "transition": "transition into next shot"
+      "transition": "transition into next sequence"
     }}
   ]
 }}
 
 Rules:
 - Cover the full {duration:.1f}-second song from 0 to the end with no major gaps.
-- Most scenes should be 5-9 seconds long.
-- Recurring people/places must remain visually consistent.
-- Avoid illustrating every lyric literally; interpret metaphor and emotional meaning.
-- Build stronger visuals around choruses and emotional peaks.
-- The final scene should resolve the video's central visual idea.
+- Use the labeled song sections to guide sequence boundaries.
+- Aim for approximately {target_scene_count} sequences, not dozens of micro-scenes.
+- A visual sequence may last 10–25 seconds if appropriate.
+- Repeated choruses should revisit or evolve a recurring visual motif.
+- Recurring people, locations, wardrobe, lighting, and era must remain consistent.
+- Avoid illustrating every lyric literally.
+- Do not use singers performing to camera and do not use lip sync.
+- Instrumental sections should use atmospheric or story-extending visuals.
+- The final sequence should resolve the video's central visual idea.
+- "pexels_query" must be 3–7 concrete searchable words only.
+- "pexels_query" should use nouns/adjectives such as:
+  "lonely rural road dusk", "woman window rain", "old church interior candlelight".
+- Do NOT put phrases such as "cinematic interpretation", "coherent world",
+  "purposeful composition", or instructions into "pexels_query".
 """
 
     response = client.responses.create(
         model=model,
         input=prompt,
-        reasoning={"effort": "medium"},
+        reasoning={
+            "effort": "medium",
+        },
     )
-    data = _extract_json(response.output_text)
-    data["source"] = f"openai:{model}"
-    return normalize_storyboard(data, duration)
+
+    data = _extract_json(
+        response.output_text
+    )
+
+    data["source"] = (
+        f"openai:{model}:section-aware-v0.4"
+    )
+
+    return normalize_storyboard(
+        data,
+        duration,
+    )
 
 
-def normalize_storyboard(data: dict[str, Any], duration: float) -> dict[str, Any]:
-    raw_scenes = data.get("scenes") or []
+def normalize_storyboard(
+    data: dict[str, Any],
+    duration: float,
+) -> dict[str, Any]:
+    raw_scenes = (
+        data.get("scenes")
+        or []
+    )
+
     scenes: list[dict[str, Any]] = []
-    for i, item in enumerate(raw_scenes, start=1):
+
+    for index, item in enumerate(
+        raw_scenes,
+        start=1,
+    ):
         try:
-            start = float(item.get("start", 0))
-            end = float(item.get("end", start + 6))
-        except (TypeError, ValueError):
+            start = float(
+                item.get("start", 0)
+            )
+
+            end = float(
+                item.get(
+                    "end",
+                    start + 12,
+                )
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ):
             continue
+
         if duration:
-            start = max(0.0, min(start, duration))
-            end = max(start + 0.1, min(end, duration))
-        scenes.append({
-            "scene": i,
-            "start": round(start, 2),
-            "end": round(end, 2),
-            "duration": round(max(0.1, end - start), 2),
-            "lyric_excerpt": str(item.get("lyric_excerpt", "")),
-            "purpose": str(item.get("purpose", "")),
-            "visual": str(item.get("visual", "")),
-            "camera": str(item.get("camera", "")),
-            "mood": str(item.get("mood", "")),
-            "transition": str(item.get("transition", "")),
-        })
+            start = max(
+                0.0,
+                min(
+                    start,
+                    duration,
+                ),
+            )
+
+            end = max(
+                start + 0.1,
+                min(
+                    end,
+                    duration,
+                ),
+            )
+
+        section = str(
+            item.get(
+                "section",
+                "",
+            )
+        ).strip()
+
+        lyric_excerpt = str(
+            item.get(
+                "lyric_excerpt",
+                "",
+            )
+        ).strip()
+
+        pexels_query = str(
+            item.get(
+                "pexels_query",
+                "",
+            )
+        ).strip()
+
+        if not pexels_query:
+            pexels_query = make_pexels_query(
+                lyric_excerpt,
+                section,
+            )
+
+        scenes.append(
+            {
+                "scene": index,
+                "section": section,
+                "start": round(
+                    start,
+                    2,
+                ),
+                "end": round(
+                    end,
+                    2,
+                ),
+                "duration": round(
+                    max(
+                        0.1,
+                        end - start,
+                    ),
+                    2,
+                ),
+                "lyric_excerpt": lyric_excerpt,
+                "purpose": str(
+                    item.get(
+                        "purpose",
+                        "",
+                    )
+                ),
+                "visual": str(
+                    item.get(
+                        "visual",
+                        "",
+                    )
+                ),
+                "pexels_query": pexels_query,
+                "camera": str(
+                    item.get(
+                        "camera",
+                        "",
+                    )
+                ),
+                "mood": str(
+                    item.get(
+                        "mood",
+                        "",
+                    )
+                ),
+                "transition": str(
+                    item.get(
+                        "transition",
+                        "",
+                    )
+                ),
+            }
+        )
+
     data["scenes"] = scenes
+
     return data
 
 
-def save_uploaded_file(uploaded_file, dest_dir: str | Path) -> Path:
+def save_uploaded_file(
+    uploaded_file,
+    dest_dir: str | Path,
+) -> Path:
     dest = Path(dest_dir)
-    dest.mkdir(parents=True, exist_ok=True)
-    out = dest / Path(uploaded_file.name).name
-    out.write_bytes(uploaded_file.getvalue())
+    dest.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    out = (
+        dest
+        / Path(
+            uploaded_file.name
+        ).name
+    )
+
+    out.write_bytes(
+        uploaded_file.getvalue()
+    )
+
     return out
