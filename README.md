@@ -1,90 +1,189 @@
-# SongStory Studio — MVP v0.2
+# SongStory Studio v0.5
 
-A working prototype for turning a complete song into a coherent music-video plan and synchronized storyboard preview.
+SongStory Studio is a Streamlit application for musicians who want a complete first-draft, story-driven music video from an original song. The default workflow uses stock footage from Pexels, not paid generative video.
 
-## What works now
+## Automatic Draft Workflow
 
-- Upload a complete MP3/WAV/M4A/AAC/FLAC song.
-- Paste lyrics or upload TXT/MD/DOCX lyrics.
-- Read the song duration with `ffprobe`.
-- Generate a full-song storyboard:
-  - with OpenAI when an API key is supplied, or
-  - with a no-cost local fallback when no key is supplied.
-- Edit the scene timing, lyric moment, visual prompt, camera direction, mood, and transition.
-- Export the storyboard as JSON.
-- Reload a previously reviewed storyboard JSON and continue editing/rendering.
-- Render a complete synchronized MP4 **animatic** with the original song using a faster single-pass FFmpeg workflow.
-- Optionally generate **one selected** text-to-video clip through Runway Gen-4.5.
-- Cost guard: the app never generates every Runway scene automatically.
+1. Upload a complete song.
+2. Paste lyrics or upload a lyrics document.
+3. Analyze the song as one coherent film.
+4. Create 10-16 meaningful story sequences for a typical full-length song.
+5. Generate a short Pexels search query for each sequence.
+6. Search Pexels automatically for every sequence.
+7. Rank candidate clips with transparent metadata-based logic.
+8. Download only the selected clip for each sequence.
+9. Trim, loop, crop, scale, and assemble footage with FFmpeg.
+10. Add the uploaded song as the final audio track.
+11. Review the completed draft.
+12. Replace only scenes that miss.
 
-## Run locally
+The user should not need to manually search and select footage for every scene before seeing a complete draft.
 
-Requirements:
-- Python 3.11+
-- FFmpeg / ffprobe
+## Creative Approach
+
+The storyboard treats the song as one film. It preserves labels such as `Intro`, `Verse 1`, `Chorus`, `Bridge`, `Guitar Solo`, and `Outro`, then uses them to shape pacing, sequence boundaries, recurring motifs, and intensity.
+
+The app avoids literal word matching when it would create the wrong imagery. For example, a song called "Lay Your Soul Down" about an outlaw, violence, judgment, and surrender should produce searches closer to:
+
+```text
+western drifter dusty road
+old western town
+desert church sunset
+revolver candle table
+```
+
+It should not search for sleeping people or people lying on beds simply because the title contains "lay down."
+
+## Pexels Setup
+
+Create a free Pexels API key and provide it as:
 
 ```bash
-cd song_video_studio
+export PEXELS_API_KEY="..."
+```
+
+For Streamlit Community Cloud, add this secret:
+
+```toml
+PEXELS_API_KEY = "..."
+```
+
+Pexels keys are never displayed in the app. The app stores returned attribution metadata for each selected clip:
+
+- video ID
+- Pexels page URL
+- creator name
+- creator URL
+
+## Optional OpenAI Setup
+
+The app works without OpenAI by using a local section-aware storyboard generator. If an OpenAI API key is available, the app can use it to create a stronger full-song storyboard.
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_MODEL="gpt-5.6-luna"
+```
+
+For Streamlit Community Cloud:
+
+```toml
+OPENAI_API_KEY = "..."
+```
+
+OpenAI is used only for story analysis and storyboard creation. It is not required for rendering and does not generate video.
+
+## Automatic Clip Selection
+
+Candidate ranking is deterministic and based on metadata Pexels actually returns:
+
+- aspect ratio compatibility
+- resolution range suitable for Streamlit
+- clip duration usefulness
+- duplicate video ID avoidance
+- creator reuse limits
+- basic query/text overlap where available
+
+The app does not pretend to understand visual semantics that Pexels metadata does not provide. If a query returns no useful results, it retries with simpler fallback searches and marks unresolved scenes for attention.
+
+## Replacing a Bad Scene
+
+After the automatic draft is built, each sequence shows:
+
+- song section
+- lyric or musical moment
+- visual concept
+- search query
+- selected footage preview
+- Pexels attribution
+
+Use **Find Alternates** on only the scene you dislike, choose **Use This Clip**, and the app re-renders the draft without restarting the full analysis.
+
+## Rendering
+
+Rendering uses FFmpeg:
+
+- H.264 MP4 video
+- uploaded song as audio
+- stock-footage audio removed
+- crop/scale to the selected output aspect ratio
+- loop shorter clips when needed
+- trim longer clips to sequence duration
+
+Stability is prioritized over complex transitions.
+
+## Run Locally
+
+Requirements:
+
+- Python 3.11+
+- FFmpeg and ffprobe
+- Pexels API key for automatic footage
+
+```bash
+cd songstory-studio
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\\Scripts\\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Then open the local Streamlit address shown in the terminal.
+Open the local Streamlit URL shown in the terminal.
 
-## Optional environment variables
+## Streamlit Community Cloud
 
-```bash
-export OPENAI_API_KEY="..."
-export OPENAI_MODEL="gpt-6-astra"
-export RUNWAYML_API_SECRET="..."
+This repo includes `packages.txt` with `ffmpeg` for Streamlit Community Cloud. Add secrets in the app settings:
+
+```toml
+PEXELS_API_KEY = "..."
+OPENAI_API_KEY = "..."  # optional
 ```
 
-Keys can also be entered temporarily in the app sidebar. This MVP does not save them to disk.
+Resource notes:
 
-## Product architecture
+- The app retrieves candidate metadata first.
+- It downloads only selected clips by default.
+- Alternates are downloaded only when selected as replacements.
+- Video files are kept in the temporary Streamlit session directory.
 
-1. **Ingest** — song + lyrics
-2. **Understand** — full-song concept, mood, story arc, visual continuity
-3. **Storyboard** — timed shot plan with video-model prompts
-4. **Review** — user edits before spending on video generation
-5. **Preview** — FFmpeg animatic with original song
-6. **Generate** — approved scenes through an interchangeable provider
-7. **Assemble** — final scenes + original mastered song
+## Limitations
 
-## Why the provider is separate
+- Stock footage may not perfectly match every scene.
+- Pexels metadata is limited, so ranking is practical rather than truly semantic.
+- The local storyboard generator is useful but less nuanced than optional AI analysis.
+- Long songs and high-resolution clips can hit Streamlit Community Cloud time or storage limits.
+- The app does not perform automatic beat detection or lip sync.
+- Runway or other paid video generation is not part of the default workflow.
 
-Video models change quickly. The app's defensible logic should be the song-understanding and creative-director layer. The provider module can later support Runway, fal.ai models, or other generators without rewriting the core product.
+## Tests
 
-## Improvements in v0.2
-
-- Fast single-pass animatic rendering instead of encoding every scene separately.
-- Storyboard JSON import for reviewed or externally prepared projects.
-- Updated configurable default OpenAI analysis model.
-
-## Recommended next build
-
-- automatic vocal/lyric transcription for songs without supplied lyrics
-- beat/section detection (intro, verse, chorus, bridge, outro)
-- character reference images and continuity controls
-- batch generation with an estimated-cost screen and explicit approval
-- retry/regenerate per shot
-- final clip timing/stretch/crop and transitions
-- persistent projects and cloud storage
-- authentication and usage limits
-- production deployment (Next.js/FastAPI or containerized Streamlit)
-
-## Current provider note
-
-Runway's current developer docs expose text-to-video through its Python SDK using `client.image_to_video.create(...)` with Gen-4.5. The integration in this MVP intentionally generates only one selected scene at a time.
-
-## Launch-tested FastAPI version
-
-This repository also includes `server.py`, a zero-friction front end that uses the FastAPI/Uvicorn stack. Run it with:
+Run syntax checks:
 
 ```bash
-uvicorn server:app --host 0.0.0.0 --port 8000
+PYTHONPYCACHEPREFIX=/tmp/songstory_pycache python -m compileall app.py core.py renderer.py video_provider.py footage_selector.py project_state.py tests
 ```
 
-Open `http://localhost:8000`. This version exercises the complete local path from upload through storyboard and rendered MP4 without requiring an AI API key.
+Run the lightweight tests without adding pytest:
+
+```bash
+PYTHONPYCACHEPREFIX=/tmp/songstory_pycache python - <<'PY'
+import importlib.util
+from pathlib import Path
+
+failures = []
+for path in sorted(Path("tests").glob("test_*.py")):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in dir(module):
+        if name.startswith("test_"):
+            try:
+                getattr(module, name)()
+                print(f"PASS {path.name}::{name}")
+            except Exception as exc:
+                failures.append((path.name, name, exc))
+                print(f"FAIL {path.name}::{name}: {exc}")
+
+if failures:
+    raise SystemExit(1)
+PY
+```

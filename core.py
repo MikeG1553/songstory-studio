@@ -203,10 +203,108 @@ _STOPWORDS = {
 _ABSTRACT_WORDS = {
     "soul", "heart", "love", "hope", "dream", "dreams", "pain", "time", "life",
     "feeling", "feel", "spirit", "forever", "memory", "memories", "truth", "way",
+    "fate", "guilt", "judgment", "surrender",
 }
 
 
-def make_pexels_query(text: str, section: str = "") -> str:
+def infer_visual_world(lyrics: str) -> dict[str, Any]:
+    """Infer a broad stock-footage world from repeated concrete cues."""
+    lowered = lyrics.lower()
+    worlds = [
+        {
+            "name": "Southern Gothic Western",
+            "terms": {
+                "outlaw",
+                "bounty",
+                "hunter",
+                "drifter",
+                "revolver",
+                "gun",
+                "horse",
+                "desert",
+                "dust",
+                "dusty",
+                "frontier",
+                "western",
+                "church",
+                "grave",
+                "graveyard",
+                "judgment",
+                "soul",
+                "sin",
+                "blood",
+            },
+            "motifs": [
+                "western drifter dusty road",
+                "old western town",
+                "desert church sunset",
+                "revolver candle table",
+                "storm desert landscape",
+            ],
+            "description": (
+                "Southern Gothic Western: dusty roads, lonely drifters, horses, "
+                "frontier towns, old churches, graveyards, storm light, and "
+                "symbols of judgment."
+            ),
+        },
+        {
+            "name": "Rural Americana",
+            "terms": {
+                "road",
+                "highway",
+                "truck",
+                "farm",
+                "field",
+                "porch",
+                "home",
+                "river",
+                "small town",
+            },
+            "motifs": [
+                "rural road sunset",
+                "old farmhouse dusk",
+                "empty highway rain",
+                "small town street night",
+            ],
+            "description": (
+                "Rural Americana: roads, fields, porches, small towns, weather, "
+                "and quiet human-scale details."
+            ),
+        },
+    ]
+
+    best = None
+    best_score = 0
+
+    for world in worlds:
+        score = sum(1 for term in world["terms"] if term in lowered)
+        if score > best_score:
+            best = world
+            best_score = score
+
+    if best and best_score >= 2:
+        return best
+
+    return {
+        "name": "Grounded Cinematic",
+        "motifs": [
+            "lonely road dusk",
+            "person window rain",
+            "wide landscape sunset",
+            "storm clouds landscape",
+        ],
+        "description": (
+            "Grounded cinematic realism with recurring locations, weather, "
+            "objects, and emotional continuity."
+        ),
+    }
+
+
+def make_pexels_query(
+    text: str,
+    section: str = "",
+    visual_world: dict[str, Any] | None = None,
+) -> str:
     """Create a short, concrete stock-footage search phrase."""
     words = re.findall(
         r"[A-Za-z][A-Za-z'-]*",
@@ -232,6 +330,11 @@ def make_pexels_query(text: str, section: str = "") -> str:
 
     section_lower = section.lower()
 
+    if not chosen and visual_world:
+        motifs = visual_world.get("motifs") or []
+        if motifs:
+            return str(motifs[0])
+
     if not chosen:
         if "intro" in section_lower:
             chosen = ["open", "road", "sunset"]
@@ -246,7 +349,16 @@ def make_pexels_query(text: str, section: str = "") -> str:
         else:
             chosen = ["cinematic", "person", "rural", "landscape"]
 
-    return " ".join(chosen[:6])
+    query = " ".join(chosen[:6])
+
+    if visual_world and visual_world.get("name") == "Southern Gothic Western":
+        query_terms = set(query.split())
+        if query_terms & {"drifter", "outlaw", "bounty", "hunter", "gun", "revolver"}:
+            return "western drifter dusty road"
+        if query_terms & {"church", "sin", "judgment", "grave", "graveyard"}:
+            return "desert church graveyard"
+
+    return query
 
 
 def _target_scene_count(
@@ -387,6 +499,7 @@ def heuristic_storyboard(
     sections = parse_lyrics_sections(
         lyrics
     )
+    visual_world = infer_visual_world(lyrics)
 
     target_count = _target_scene_count(
         duration,
@@ -416,10 +529,12 @@ def heuristic_storyboard(
             query = make_pexels_query(
                 excerpt,
                 label,
+                visual_world,
             )
 
             visual = (
                 f"{label}: {excerpt}. "
+                f"{visual_world['description']} "
                 f"Grounded cinematic scene built around: {query}. "
                 "Keep recurring people and locations visually consistent. "
                 "No on-screen text and no lip sync."
@@ -505,13 +620,14 @@ def heuristic_storyboard(
     return {
         "concept": (
             "A coherent cinematic interpretation organized around the song's "
-            "actual sections, with recurring people, places, and visual motifs."
+            f"actual sections in a {visual_world['name']} visual world, with "
+            "recurring people, places, and visual motifs."
         ),
         "mood": (
             "Emotion follows the verse/chorus/bridge/instrumental progression."
         ),
         "visual_style": (
-            "Cinematic, naturalistic, consistent characters and locations; "
+            f"{visual_world['description']} Cinematic, naturalistic, consistent characters and locations; "
             "no lip sync unless explicitly requested."
         ),
         "story_arc": (
@@ -519,7 +635,7 @@ def heuristic_storyboard(
             "shift at bridge/instrumental → resolve in final chorus/outro."
         ),
         "scenes": scenes,
-        "source": "local-section-aware-v0.4",
+        "source": "local-section-aware-v0.5",
     }
 
 
@@ -565,7 +681,7 @@ def ai_storyboard(
     interpretation: str,
     aspect_ratio: str,
     api_key: str,
-    model: str = "gpt-5.4-mini",
+    model: str = "gpt-5.6-luna",
 ) -> dict[str, Any]:
     from openai import OpenAI
 
@@ -666,7 +782,7 @@ Rules:
     )
 
     data["source"] = (
-        f"openai:{model}:section-aware-v0.4"
+        f"openai:{model}:section-aware-v0.5"
     )
 
     return normalize_storyboard(
