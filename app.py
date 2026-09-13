@@ -9,7 +9,7 @@ import streamlit as st
 
 from core import ai_storyboard, extract_lyrics, ffprobe_duration, heuristic_storyboard, normalize_storyboard, save_uploaded_file
 from renderer import render_animatic
-from video_provider import runway_text_to_video
+from video_provider import pexels_search_videos
 
 st.set_page_config(page_title="SongStory Studio", page_icon="🎬", layout="wide")
 
@@ -27,7 +27,7 @@ st.markdown("""
 <div class="hero">
 <h1>🎬 SongStory Studio</h1>
 <p>Create a coherent music-video concept from a complete song — lyrics, mood, story arc, storyboard, and scene prompts.</p>
-<p class="subtle">MVP: upload → analyze → edit storyboard → render synchronized animatic → optionally generate selected AI video scenes.</p>
+<p class="subtle">MVP: upload → analyze → edit storyboard → render synchronized animatic → find and select free cinematic footage.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -51,7 +51,7 @@ with st.sidebar:
     openai_key = st.text_input("OpenAI API key", value=os.getenv("OPENAI_API_KEY", ""), type="password")
     model = st.text_input("Analysis model", value=os.getenv("OPENAI_MODEL", "gpt-5.4-mini"))
     st.divider()
-    runway_key = st.text_input("Runway API key (optional)", value=os.getenv("RUNWAYML_API_SECRET", ""), type="password")
+    pexels_key = st.secrets.get("PEXELS_API_KEY", os.getenv("PEXELS_API_KEY", ""))
 
 st.subheader("1. Upload the song")
 audio = st.file_uploader("Complete song", type=["mp3", "wav", "m4a", "aac", "flac"], help="The final video keeps this original audio track.")
@@ -162,7 +162,7 @@ if sb:
     st.download_button("Download storyboard JSON", export_json, file_name="songstory_storyboard.json", mime="application/json")
 
     st.subheader("5. Render a synchronized animatic")
-    st.write("This creates a complete MP4 using storyboard cards timed to the original song. It is a low-cost way to review pacing before generating expensive AI video clips.")
+    st.write("This creates a complete MP4 using storyboard cards timed to the original song. It is a low-cost way to review pacing before selecting final footage.")
     if st.button("Render animatic preview", type="primary"):
         out = Path(st.session_state.project_dir) / "songstory_animatic.mp4"
         with st.spinner("Rendering storyboard timing with the original song…"):
@@ -175,27 +175,117 @@ if sb:
         st.video(st.session_state.animatic_path)
         st.download_button("Download animatic MP4", Path(st.session_state.animatic_path).read_bytes(), file_name="songstory_animatic.mp4", mime="video/mp4")
 
-    st.subheader("6. Optional: generate one Runway scene")
-    st.warning("Cost guard: this MVP generates only the single scene you select. It never launches the full storyboard automatically.")
+    st.subheader("6. Find free Pexels footage")
+
+    st.write(
+        "Select a storyboard scene and search Pexels for free cinematic footage. "
+        "Nothing is purchased or downloaded automatically."
+    )
+    
     if scenes:
-        scene_numbers = [int(s.get("scene", i + 1)) for i, s in enumerate(st.session_state.storyboard.get("scenes", []))]
-        selected_num = st.selectbox("Scene to generate", scene_numbers)
-        selected = next(s for s in st.session_state.storyboard["scenes"] if int(s.get("scene")) == selected_num)
-        prompt = st.text_area("Video prompt", value=selected.get("visual", ""), height=150, key=f"runway_prompt_{selected_num}")
-        if st.button("Generate selected Runway scene"):
-            if not runway_key:
-                st.error("Enter a Runway API key in the sidebar first.")
+        scene_numbers = [
+            int(s.get("scene", i + 1))
+            for i, s in enumerate(st.session_state.storyboard.get("scenes", []))
+        ]
+    
+        selected_num = st.selectbox(
+            "Scene to find footage for",
+            scene_numbers
+        )
+    
+        selected = next(
+            s for s in st.session_state.storyboard["scenes"]
+            if int(s.get("scene")) == selected_num
+        )
+    
+        default_query = (
+            selected.get("visual", "")
+            or selected.get("lyric_excerpt", "")
+        )
+    
+        search_query = st.text_input(
+            "Pexels search description",
+            value=default_query,
+            key=f"pexels_query_{selected_num}"
+        )
+    
+        if st.button("Search Pexels for this scene"):
+            if not pexels_key:
+                st.error("The Pexels API key was not found in Streamlit Secrets.")
+            elif not search_query.strip():
+                st.error("Enter a search description first.")
             else:
-                ratio_map = {"16:9": "1280:720", "9:16": "720:1280", "1:1": "960:960"}
-                with st.spinner("Generating this one scene with Runway…"):
+                with st.spinner("Searching Pexels for cinematic footage..."):
                     try:
-                        url = runway_text_to_video(prompt, runway_key, duration=5, ratio=ratio_map[aspect_ratio])
-                        st.session_state.last_runway_url = url
+                        results = pexels_search_videos(
+                            search_query,
+                            pexels_key,
+                            per_page=6
+                        )
+    
+                        st.session_state.pexels_results = results
+                        st.session_state.pexels_scene = selected_num
+    
                     except Exception as exc:
-                        st.error(f"Runway generation failed: {exc}")
-        if st.session_state.get("last_runway_url"):
-            st.video(st.session_state.last_runway_url)
-            st.write(st.session_state.last_runway_url)
+                        st.error(f"Pexels search failed: {exc}")
+    
+        if st.session_state.get("pexels_scene") == selected_num:
+            results = st.session_state.get("pexels_results", [])
+    
+            if not results:
+                st.info(
+                    "No suitable landscape clips were found. "
+                    "Try simplifying the search description."
+                )
+            else:
+                st.caption(
+                    "Preview the choices below and select the clip you prefer."
+                )
+    
+                for start in range(0, len(results), 3):
+                    columns = st.columns(3)
+    
+                    for col, clip in zip(
+                        columns,
+                        results[start:start + 3]
+                    ):
+                        with col:
+                            st.video(clip["video_url"])
+    
+                            st.caption(
+                                f'{clip["creator"]} • '
+                                f'{clip["duration"]} seconds'
+                            )
+    
+                            if clip.get("page_url"):
+                                st.markdown(
+                                    f'[View on Pexels]({clip["page_url"]})'
+                                )
+    
+                            if st.button(
+                                "Use this clip",
+                                key=f"choose_pexels_{selected_num}_{clip['id']}"
+                            ):
+                                if "selected_pexels_clips" not in st.session_state:
+                                    st.session_state.selected_pexels_clips = {}
+    
+                                st.session_state.selected_pexels_clips[
+                                    selected_num
+                                ] = clip
+    
+                                st.success(
+                                    f"Clip selected for scene {selected_num}."
+                                )
+    
+        chosen = st.session_state.get(
+            "selected_pexels_clips",
+            {}
+        ).get(selected_num)
+    
+        if chosen:
+            st.success(
+                f"Scene {selected_num} has a Pexels clip selected."
+            )
 
 st.divider()
-st.caption("MVP v0.2 • The architecture separates song interpretation from video generation so video providers can be swapped as models improve.")
+st.caption("MVP v0.3 • The architecture separates song interpretation from video generation so video providers can be swapped as models improve.")
