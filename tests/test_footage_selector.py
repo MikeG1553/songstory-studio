@@ -2,6 +2,7 @@ from footage_selector import (
     SelectionContext,
     automatic_select_for_scene,
     fallback_queries,
+    pool_candidates_from_queries,
     rank_candidates,
     update_selection_context,
 )
@@ -56,20 +57,65 @@ def test_ranking_prefers_usable_landscape_and_avoids_duplicates():
     assert ranked[-1]["id"] == 1
 
 
-def test_automatic_selection_retries_when_first_query_has_no_results():
+def test_automatic_selection_considers_later_queries_when_first_has_results():
     calls = []
 
     def search(query):
         calls.append(query)
         if len(calls) == 1:
-            return []
-        return [candidate(9)]
+            return [candidate(5, width=640, height=360, duration=2)]
+        if "western" in query:
+            return [candidate(9, width=1600, height=900, duration=14)]
+        return []
 
     result = automatic_select_for_scene(scene(), search, SelectionContext())
 
     assert result["status"] == "selected"
     assert result["selected"]["id"] == 9
-    assert len(calls) == 2
+    assert len(calls) > 1
+
+
+def test_pooled_candidates_are_deduplicated_and_keep_source_query():
+    def search(query):
+        if query == "western drifter dusty road":
+            return [candidate(7), candidate(8)]
+        return [candidate(7), candidate(9)] if "western" in query else []
+
+    pooled, attempts = pool_candidates_from_queries(scene(), search)
+    ids = [item["id"] for item in pooled]
+
+    assert len(ids) == len(set(ids))
+    assert attempts[0]["query"] == "western drifter dusty road"
+    assert all(item["source_query"] for item in pooled)
+    assert next(item for item in pooled if item["id"] == 7)["source_query"] == "western drifter dusty road"
+
+
+def test_duplicate_clip_avoidance_across_scenes_selects_unused_candidate():
+    def search(query):
+        return [
+            candidate(1, width=1600, height=900, duration=14),
+            candidate(2, width=1600, height=900, duration=14),
+        ]
+
+    result = automatic_select_for_scene(
+        scene(),
+        search,
+        SelectionContext(used_video_ids=frozenset({1})),
+    )
+
+    assert result["selected"]["id"] == 2
+
+
+def test_deterministic_selection_works_without_openai_preview_ranker():
+    result = automatic_select_for_scene(
+        scene(),
+        lambda query: [candidate(11, width=1600, height=900, duration=14)],
+        SelectionContext(),
+        preview_ranker=None,
+    )
+
+    assert result["status"] == "selected"
+    assert result["selected"]["id"] == 11
 
 
 def test_selection_context_tracks_video_and_creator_reuse():

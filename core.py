@@ -106,7 +106,7 @@ _SECTION_RE = re.compile(
                 outro|
                 refrain|
                 interlude|
-                instrumental(?:\s+(?:break|solo))?|
+                instrumental(?:\s+(?:intro|break|cut|outro|solo))?|
                 guitar\s+solo|
                 piano\s+solo|
                 solo
@@ -133,6 +133,7 @@ def parse_lyrics_sections(lyrics: str) -> list[dict[str, Any]]:
         "label": "Song",
         "lines": [],
     }
+    saw_structural_heading = False
 
     for raw_line in lyrics.splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
@@ -143,7 +144,9 @@ def parse_lyrics_sections(lyrics: str) -> list[dict[str, Any]]:
         match = _SECTION_RE.match(line)
 
         if match:
-            if current["lines"] or current["label"] != "Song":
+            if current["label"] != "Song" or (
+                current["lines"] and saw_structural_heading
+            ):
                 sections.append(current)
 
             label = (
@@ -152,6 +155,7 @@ def parse_lyrics_sections(lyrics: str) -> list[dict[str, Any]]:
                 or "Song"
             )
 
+            saw_structural_heading = True
             current = {
                 "label": _clean_section_name(label),
                 "lines": [],

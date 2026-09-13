@@ -134,6 +134,78 @@ def fallback_queries(scene: dict[str, Any]) -> list[str]:
     return queries[:6]
 
 
+def query_variants(scene: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build useful query variants before selection.
+
+    The first query is the primary scene query. Later queries broaden toward
+    visual-world, location, instrumental, and atmospheric searches. Selection is
+    made only after candidates from these variants have been pooled.
+    """
+    variants: list[dict[str, Any]] = []
+
+    for index, query in enumerate(fallback_queries(scene)):
+        if index == 0:
+            role = "primary"
+        elif index == 1:
+            role = "simplified"
+        elif any(term in query for term in ["western", "desert", "church", "town", "road"]):
+            role = "visual_world"
+        else:
+            role = "fallback"
+
+        variants.append(
+            {
+                "query": query,
+                "role": role,
+                "rank": index,
+            }
+        )
+
+    return variants
+
+
+def pool_candidates_from_queries(
+    scene: dict[str, Any],
+    search_func: Callable[[str], list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    pooled_by_id: dict[Any, dict[str, Any]] = {}
+    attempts = []
+
+    for variant in query_variants(scene):
+        query = variant["query"]
+        results = search_func(query)
+        enriched_results = []
+
+        for result in results:
+            enriched = dict(result)
+            enriched["query"] = query
+            enriched["source_query"] = query
+            enriched["source_query_role"] = variant["role"]
+            enriched["source_query_rank"] = variant["rank"]
+            enriched_results.append(enriched)
+
+            video_id = enriched.get("id")
+            key = video_id if video_id is not None else enriched.get("video_url")
+
+            if key is None:
+                continue
+
+            existing = pooled_by_id.get(key)
+            if existing is None or variant["rank"] < existing.get("source_query_rank", 99):
+                pooled_by_id[key] = enriched
+
+        attempts.append(
+            {
+                "query": query,
+                "role": variant["role"],
+                "count": len(enriched_results),
+                "candidates": enriched_results,
+            }
+        )
+
+    return list(pooled_by_id.values()), attempts
+
+
 def score_candidate(
     candidate: dict[str, Any],
     scene: dict[str, Any],
@@ -151,6 +223,8 @@ def score_candidate(
     video_id = candidate.get("id")
     creator = str(candidate.get("creator") or "")
     creator_counts = context.creator_counts or {}
+    source_query_rank = int(candidate.get("source_query_rank") or 0)
+    source_query_role = str(candidate.get("source_query_role") or "")
 
     if width and height:
         if context.aspect_ratio == "9:16":
@@ -199,6 +273,15 @@ def score_candidate(
     if any(term in text for term in scene_terms):
         score += 4
 
+    if source_query_role == "primary":
+        score += 10
+    elif source_query_role == "simplified":
+        score += 6
+    elif source_query_role == "visual_world":
+        score += 4
+
+    score -= min(source_query_rank, 5) * 1.5
+
     if video_id in context.used_video_ids:
         score -= 100
 
@@ -244,31 +327,40 @@ def automatic_select_for_scene(
     scene: dict[str, Any],
     search_func: Callable[[str], list[dict[str, Any]]],
     context: SelectionContext,
+    preview_ranker: Callable[[dict[str, Any], list[dict[str, Any]]], dict[str, Any] | None] | None = None,
+    preview_shortlist_size: int = 3,
 ) -> dict[str, Any]:
-    attempts = []
+    pooled, attempts = pool_candidates_from_queries(scene, search_func)
+    ranked = rank_candidates(pooled, scene, context)
+    choice = None
+    ai_selected = False
 
-    for query in fallback_queries(scene):
-        results = search_func(query)
-        enriched = [dict(result, query=query) for result in results]
-        ranked = rank_candidates(enriched, scene, context)
-        attempts.append(
-            {
-                "query": query,
-                "count": len(ranked),
-                "candidates": ranked,
-            }
-        )
+    available = [
+        candidate
+        for candidate in ranked
+        if candidate.get("id") not in context.used_video_ids
+    ]
 
-        choice = select_best_candidate(enriched, scene, context)
+    if preview_ranker and available:
+        shortlist = available[: max(1, preview_shortlist_size)]
+        preview_choice = preview_ranker(scene, shortlist)
 
-        if choice:
-            return {
-                "status": "selected",
-                "query": query,
-                "selected": choice,
-                "attempts": attempts,
-                "candidates": ranked,
-            }
+        if preview_choice and preview_choice.get("id") not in context.used_video_ids:
+            choice = preview_choice
+            ai_selected = True
+
+    if choice is None:
+        choice = available[0] if available else (ranked[0] if ranked else None)
+
+    if choice:
+        return {
+            "status": "selected",
+            "query": choice.get("source_query") or choice.get("query"),
+            "selected": choice,
+            "attempts": attempts,
+            "candidates": ranked,
+            "ai_preview_selected": ai_selected,
+        }
 
     return {
         "status": "needs_attention",
@@ -278,6 +370,93 @@ def automatic_select_for_scene(
         "candidates": [],
         "message": "No usable Pexels footage was found for this scene.",
     }
+
+
+def create_openai_preview_ranker(
+    api_key: str,
+    model: str = "gpt-5.6-luna",
+) -> Callable[[dict[str, Any], list[dict[str, Any]]], dict[str, Any] | None] | None:
+    if not api_key:
+        return None
+
+    def ranker(
+        scene: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        preview_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.get("preview_image")
+        ][:3]
+
+        if not preview_candidates:
+            return None
+
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=api_key)
+            content: list[dict[str, Any]] = [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Choose the single Pexels candidate whose preview image best matches "
+                        "this music-video storyboard scene. Pexels metadata is limited; use "
+                        "the image only as a light relevance check. Return only JSON like "
+                        '{"best_id": 123}.\n\n'
+                        f"Section: {scene.get('section', '')}\n"
+                        f"Lyric/musical moment: {scene.get('lyric_excerpt', '')}\n"
+                        f"Visual concept: {scene.get('visual', '')}\n"
+                    ),
+                }
+            ]
+
+            for candidate in preview_candidates:
+                content.append(
+                    {
+                        "type": "input_text",
+                        "text": (
+                            f"Candidate ID: {candidate.get('id')}; "
+                            f"source query: {candidate.get('source_query') or candidate.get('query')}; "
+                            f"creator: {candidate.get('creator', '')}"
+                        ),
+                    }
+                )
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": candidate["preview_image"],
+                    }
+                )
+
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": content,
+                    }
+                ],
+            )
+
+            match = re.search(r"\{.*\}", response.output_text, re.DOTALL)
+            if not match:
+                return None
+
+            import json
+
+            best_id = json.loads(match.group(0)).get("best_id")
+
+            for candidate in preview_candidates:
+                if str(candidate.get("id")) == str(best_id):
+                    return candidate
+
+        except Exception:
+            return None
+
+        return None
+
+    return ranker
 
 
 def update_selection_context(

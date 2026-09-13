@@ -19,6 +19,7 @@ from core import (
 from footage_selector import (
     SelectionContext,
     automatic_select_for_scene,
+    create_openai_preview_ranker,
     fallback_queries,
     rank_candidates,
     update_selection_context,
@@ -121,7 +122,12 @@ def build_credits(selections: dict[int, dict[str, Any]]) -> list[dict[str, Any]]
     return credits
 
 
-def run_automatic_draft(api_key: str, aspect_ratio: str) -> None:
+def run_automatic_draft(
+    api_key: str,
+    aspect_ratio: str,
+    openai_api_key: str = "",
+    openai_model: str = "gpt-5.6-luna",
+) -> None:
     storyboard = st.session_state.get("storyboard")
     project_dir = st.session_state.get("project_dir")
     audio_path = st.session_state.get("audio_path")
@@ -149,6 +155,7 @@ def run_automatic_draft(api_key: str, aspect_ratio: str) -> None:
     candidates_by_scene: dict[int, list[dict[str, Any]]] = {}
     statuses: dict[int, dict[str, Any]] = {}
     context = SelectionContext(aspect_ratio=aspect_ratio)
+    preview_ranker = create_openai_preview_ranker(openai_api_key, openai_model)
     clips_dir = Path(project_dir) / "pexels_clips"
     progress = st.progress(0)
     status = st.empty()
@@ -162,6 +169,7 @@ def run_automatic_draft(api_key: str, aspect_ratio: str) -> None:
                 scene,
                 lambda query: search_scene(query, api_key, aspect_ratio),
                 context,
+                preview_ranker=preview_ranker,
             )
         except PexelsAuthError as exc:
             st.error(str(exc))
@@ -587,7 +595,7 @@ if storyboard:
         type="primary",
         use_container_width=True,
     ):
-        run_automatic_draft(pexels_key, aspect_ratio)
+        run_automatic_draft(pexels_key, aspect_ratio, openai_key, model)
 
     if st.session_state.get("final_video_path") and Path(st.session_state.final_video_path).exists():
         st.success("Automatic draft available.")
