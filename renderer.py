@@ -147,3 +147,140 @@ def assemble_generated_clips(audio_path: str | Path, clips: list[str | Path], ou
             "-shortest", str(output_path)
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return output_path
+
+
+def render_selected_pexels_clips(
+    audio_path: str | Path,
+    storyboard: dict[str, Any],
+    clip_paths: dict[int, str | Path],
+    aspect_ratio: str,
+    output_path: str | Path,
+) -> Path:
+    """Create a complete music video from selected Pexels clips."""
+
+    scenes = storyboard.get("scenes", [])
+
+    if not scenes:
+        raise ValueError("Storyboard has no scenes")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    w, h = _dimensions(aspect_ratio)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        normalized_clips = []
+
+        for i, scene in enumerate(scenes, start=1):
+            scene_number = int(scene.get("scene", i))
+
+            if scene_number not in clip_paths:
+                raise ValueError(
+                    f"No selected clip for scene {scene_number}"
+                )
+
+            source_clip = Path(clip_paths[scene_number])
+
+            if not source_clip.exists():
+                raise FileNotFoundError(
+                    f"Clip file is missing for scene {scene_number}"
+                )
+
+            duration = max(
+                0.2,
+                float(scene.get("end", 0))
+                - float(scene.get("start", 0)),
+            )
+
+            normalized = tmp / f"scene_{i:03d}.mp4"
+
+            subprocess.check_call(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    str(source_clip),
+                    "-t",
+                    f"{duration:.3f}",
+                    "-vf",
+                    (
+                        f"scale={w}:{h}:"
+                        "force_original_aspect_ratio=increase,"
+                        f"crop={w}:{h},"
+                        "fps=24,"
+                        "format=yuv420p"
+                    ),
+                    "-an",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "22",
+                    str(normalized),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            normalized_clips.append(normalized)
+
+        concat_file = tmp / "clips.txt"
+
+        concat_file.write_text(
+            "\n".join(
+                f"file '{clip.resolve().as_posix()}'"
+                for clip in normalized_clips
+            ),
+            encoding="utf-8",
+        )
+
+        joined_video = tmp / "joined.mp4"
+
+        subprocess.check_call(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-c",
+                "copy",
+                str(joined_video),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        subprocess.check_call(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(joined_video),
+                "-i",
+                str(audio_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                str(output_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    return output_path
