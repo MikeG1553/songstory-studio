@@ -53,7 +53,7 @@ st.markdown(
 <div class="hero">
 <h1>🎬 SongStory Studio</h1>
 <p>Create a coherent music-video concept from a complete song — lyrics, mood, story arc, storyboard, and scene prompts.</p>
-<p class="subtle">MVP: upload → analyze → edit storyboard → render synchronized animatic → find and select free cinematic footage → build the complete music video.</p>
+<p class="subtle">MVP v0.4: preserve song sections → build a focused storyboard → search free cinematic footage → assemble the complete music video.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -371,6 +371,10 @@ if sb:
                 "Scene",
                 width="small",
             ),
+            "section": st.column_config.TextColumn(
+                "Song section",
+                width="medium",
+            ),
             "start": st.column_config.NumberColumn(
                 "Start",
                 format="%.2f",
@@ -389,8 +393,12 @@ if sb:
                 width="medium",
             ),
             "visual": st.column_config.TextColumn(
-                "Visual prompt",
+                "Visual concept",
                 width="large",
+            ),
+            "pexels_query": st.column_config.TextColumn(
+                "Pexels search",
+                width="medium",
             ),
             "camera": st.column_config.TextColumn(
                 "Camera",
@@ -510,8 +518,14 @@ if sb:
         )
 
         default_query = (
-            selected.get("visual", "")
+            selected.get("pexels_query", "")
             or selected.get("lyric_excerpt", "")
+            or selected.get("visual", "")
+        )
+
+        st.caption(
+            f"Section: {selected.get('section', 'Song')} • "
+            f"Lyric/moment: {selected.get('lyric_excerpt', '')}"
         )
 
         search_query = st.text_input(
@@ -807,7 +821,7 @@ if sb:
 st.divider()
 
 st.caption(
-    "MVP v0.3 • SongStory Studio uses free Pexels footage "
+    "MVP v0.4 • SongStory Studio preserves song sections and uses free Pexels footage "
     "for scene selection and assembles the chosen clips "
     "with the original song."
 )
