@@ -8,8 +8,8 @@ from pathlib import Path
 import streamlit as st
 
 from core import ai_storyboard, extract_lyrics, ffprobe_duration, heuristic_storyboard, normalize_storyboard, save_uploaded_file
-from renderer import render_animatic
-from video_provider import pexels_search_videos
+from renderer import render_animatic, render_selected_pexels_clips
+from video_provider import download_clip, pexels_search_videos
 
 st.set_page_config(page_title="SongStory Studio", page_icon="🎬", layout="wide")
 
@@ -286,6 +286,14 @@ if sb:
             st.success(
                 f"Scene {selected_num} has a Pexels clip selected."
             )
+if chosen:
+            st.success(
+                f"Scene {selected_num} has a Pexels clip selected."
+            )
 
+    # PASTE THE NEW STEP 7 CODE HERE
+
+st.divider()
+st.caption("MVP v0.3 ...")
 st.divider()
 st.caption("MVP v0.3 • The architecture separates song interpretation from video generation so video providers can be swapped as models improve.")
