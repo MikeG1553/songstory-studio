@@ -27,6 +27,7 @@ from footage_selector import (
 )
 from hybrid_media import preserve_scene_media_state, select_hybrid_media_for_scene, text_overlay
 from image_generation import DEFAULT_IMAGE_MODEL, HERO_IMAGE_MODEL, generate_protagonist_reference, generate_still_image
+from project_archive import ProjectArchiveError, create_project_archive, load_project_archive
 from project_state import clear_project_state, ensure_project_state, reset_footage_state
 from renderer import render_animatic, render_hybrid_media, render_selected_pexels_clips
 from video_provider import (
@@ -68,6 +69,26 @@ st.markdown(
 
 ensure_project_state(st.session_state)
 
+STYLE_OPTIONS = [
+    "Cinematic realistic",
+    "Southern Gothic Western",
+    "Southern rock / Americana",
+    "Country storytelling",
+    "Dreamlike symbolic",
+    "Vintage film",
+    "Dark dramatic",
+    "Animated",
+    "Custom",
+]
+
+INTERPRETATION_OPTIONS = [
+    "Combination of story + symbolism",
+    "Mostly literal story",
+    "Mostly symbolic",
+]
+
+ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "1:1"]
+
 
 def get_secret(name: str) -> str:
     try:
@@ -84,6 +105,49 @@ def create_project(audio_file) -> None:
     st.session_state.project_dir = str(project_dir)
     st.session_state.audio_path = str(audio_path)
     st.session_state.audio_duration = duration
+    st.session_state.song_filename = Path(audio_file.name).name
+
+
+def restore_project(package: bytes) -> None:
+    project_dir = Path(tempfile.mkdtemp(prefix="songstory_loaded_"))
+    restored = load_project_archive(package, project_dir)
+    clear_project_state(st.session_state)
+    ensure_project_state(st.session_state)
+    st.session_state.update(restored)
+    st.session_state.lyrics_input = restored.get("lyrics", "")
+    st.session_state.video_style_select = (
+        restored.get("video_style")
+        if restored.get("video_style") in STYLE_OPTIONS
+        else "Custom"
+    )
+    st.session_state.video_style_custom = restored.get("video_style", "")
+    st.session_state.interpretation_select = restored.get("interpretation", INTERPRETATION_OPTIONS[0])
+    st.session_state.aspect_ratio_select = restored.get("aspect_ratio", "16:9")
+    st.session_state.analysis_model_input = restored.get("analysis_model", "")
+    st.session_state.image_model_input = restored.get("image_model", DEFAULT_IMAGE_MODEL)
+
+
+def clear_project_and_widgets() -> None:
+    clear_project_state(st.session_state)
+    for key in [
+        "lyrics_input",
+        "video_style_select",
+        "video_style_custom",
+        "interpretation_select",
+        "aspect_ratio_select",
+        "analysis_model_input",
+        "image_model_input",
+        "storyboard_json_import",
+        "songstory_project_upload",
+    ]:
+        st.session_state.pop(key, None)
+    ensure_project_state(st.session_state)
+
+
+def project_download_name() -> str:
+    song_name = Path(st.session_state.get("song_filename") or "songstory_project").stem
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in song_name)
+    return f"{safe or 'songstory_project'}.songstory"
 
 
 def clear_outputs_for_new_storyboard() -> None:
@@ -446,44 +510,84 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+st.subheader("Project")
+project_col1, project_col2, project_col3 = st.columns([1, 2, 2])
+
+with project_col1:
+    if st.button("New Project", use_container_width=True):
+        clear_project_and_widgets()
+        st.rerun()
+
+with project_col2:
+    project_upload = st.file_uploader(
+        "Load Existing SongStory Project",
+        type=["songstory", "zip"],
+        key="songstory_project_upload",
+    )
+    if st.button(
+        "Load Selected Project",
+        disabled=project_upload is None,
+        use_container_width=True,
+    ):
+        try:
+            restore_project(project_upload.getvalue())
+            st.success("SongStory project loaded.")
+            st.rerun()
+        except ProjectArchiveError as exc:
+            st.error(str(exc))
+
+with project_col3:
+    try:
+        project_package = create_project_archive(st.session_state)
+        st.download_button(
+            "Save SongStory Project",
+            data=project_package,
+            file_name=project_download_name(),
+            mime="application/zip",
+            use_container_width=True,
+        )
+    except ProjectArchiveError as exc:
+        st.error(str(exc))
+
 with st.sidebar:
     st.header("Creative Direction")
 
+    saved_style = st.session_state.get("video_style", "Cinematic realistic")
+    style_index = STYLE_OPTIONS.index(saved_style) if saved_style in STYLE_OPTIONS else STYLE_OPTIONS.index("Custom")
     style = st.selectbox(
         "Video style",
-        [
-            "Cinematic realistic",
-            "Southern Gothic Western",
-            "Southern rock / Americana",
-            "Country storytelling",
-            "Dreamlike symbolic",
-            "Vintage film",
-            "Dark dramatic",
-            "Animated",
-            "Custom",
-        ],
+        STYLE_OPTIONS,
+        index=style_index,
+        key="video_style_select",
     )
 
     if style == "Custom":
         style = st.text_input(
             "Describe your style",
-            "Cinematic, grounded, emotionally authentic",
+            saved_style if saved_style not in STYLE_OPTIONS else "Cinematic, grounded, emotionally authentic",
+            key="video_style_custom",
         )
+    st.session_state.video_style = style
 
     interpretation = st.radio(
         "Interpretation",
-        [
-            "Combination of story + symbolism",
-            "Mostly literal story",
-            "Mostly symbolic",
-        ],
-        index=0,
+        INTERPRETATION_OPTIONS,
+        index=(
+            INTERPRETATION_OPTIONS.index(st.session_state.get("interpretation"))
+            if st.session_state.get("interpretation") in INTERPRETATION_OPTIONS
+            else 0
+        ),
+        key="interpretation_select",
     )
+    st.session_state.interpretation = interpretation
 
     aspect_ratio = st.selectbox(
         "Output format",
-        ["16:9", "9:16", "1:1"],
+        ASPECT_RATIO_OPTIONS,
+        index=ASPECT_RATIO_OPTIONS.index(st.session_state.get("aspect_ratio", "16:9")),
+        key="aspect_ratio_select",
     )
+    st.session_state.aspect_ratio = aspect_ratio
 
     st.divider()
 
@@ -495,14 +599,18 @@ with st.sidebar:
 
     model = st.text_input(
         "Analysis model",
-        value=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+        value=st.session_state.get("analysis_model") or os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+        key="analysis_model_input",
     )
+    st.session_state.analysis_model = model
 
     image_model = st.text_input(
         "Image model",
-        value=os.getenv("OPENAI_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
+        value=st.session_state.get("image_model") or os.getenv("OPENAI_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
         help=f"Default still/reference model. Use {HERO_IMAGE_MODEL} later for important hero scenes.",
+        key="image_model_input",
     )
+    st.session_state.image_model = image_model
 
     pexels_key = get_secret("PEXELS_API_KEY")
 
@@ -515,6 +623,7 @@ with st.sidebar:
 
     if st.button("Start a new song", use_container_width=True):
         clear_project_state(st.session_state)
+        ensure_project_state(st.session_state)
         st.rerun()
 
 
@@ -527,7 +636,15 @@ audio = st.file_uploader(
 )
 
 if audio:
+    if (
+        not st.session_state.get("audio_path")
+        or st.session_state.get("song_filename") != Path(audio.name).name
+    ):
+        create_project(audio)
     st.audio(audio.getvalue())
+elif st.session_state.get("audio_path") and Path(st.session_state.audio_path).exists():
+    st.caption(f"Loaded song: {st.session_state.get('song_filename') or Path(st.session_state.audio_path).name}")
+    st.audio(st.session_state.audio_path)
 
 
 st.subheader("2. Add Lyrics")
@@ -543,9 +660,12 @@ lyrics = ""
 if lyric_mode == "Paste lyrics":
     lyrics = st.text_area(
         "Lyrics",
+        value=st.session_state.get("lyrics", ""),
         height=250,
         placeholder="Paste complete lyrics with section labels like Verse 1, Chorus, Bridge, Guitar Solo...",
+        key="lyrics_input",
     )
+    st.session_state.lyrics = lyrics
 else:
     lyric_file = st.file_uploader(
         "Lyrics file",
@@ -554,6 +674,7 @@ else:
 
     if lyric_file:
         lyrics = extract_lyrics(lyric_file)
+        st.session_state.lyrics = lyrics
         st.text_area(
             "Extracted lyrics",
             value=lyrics,
@@ -585,13 +706,12 @@ with right:
 
 
 if analyze_clicked:
-    if not audio:
+    lyrics = st.session_state.get("lyrics", "")
+    if not st.session_state.get("audio_path"):
         st.error("Please upload a song first.")
     elif not lyrics.strip():
         st.error("Please paste or upload lyrics first.")
     else:
-        create_project(audio)
-
         with st.spinner("Analyzing the complete song as one coherent film..."):
             if openai_key:
                 try:
@@ -625,7 +745,7 @@ if analyze_clicked:
 
 
 if load_imported:
-    if not audio:
+    if not st.session_state.get("audio_path"):
         st.error("Upload the matching song before loading its storyboard.")
     else:
         try:

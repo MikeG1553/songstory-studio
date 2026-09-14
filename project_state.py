@@ -7,6 +7,13 @@ PROJECT_KEYS = [
     "project_dir",
     "audio_path",
     "audio_duration",
+    "song_filename",
+    "lyrics",
+    "video_style",
+    "interpretation",
+    "aspect_ratio",
+    "analysis_model",
+    "image_model",
     "storyboard",
     "pexels_results",
     "pexels_scene",
@@ -35,6 +42,13 @@ def clear_project_state(session_state: Any) -> None:
 def ensure_project_state(session_state: Any) -> None:
     session_state.setdefault("storyboard", None)
     session_state.setdefault("project_dir", None)
+    session_state.setdefault("song_filename", "")
+    session_state.setdefault("lyrics", "")
+    session_state.setdefault("video_style", "Cinematic realistic")
+    session_state.setdefault("interpretation", "Combination of story + symbolism")
+    session_state.setdefault("aspect_ratio", "16:9")
+    session_state.setdefault("analysis_model", "gpt-5.6-luna")
+    session_state.setdefault("image_model", "gpt-image-2.5-flare")
     session_state.setdefault("selected_pexels_clips", {})
     session_state.setdefault("downloaded_clip_paths", {})
     session_state.setdefault("scene_candidates", {})
