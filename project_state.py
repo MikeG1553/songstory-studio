@@ -19,6 +19,11 @@ PROJECT_KEYS = [
     "footage_credits",
     "render_status",
     "visual_review_cache",
+    "hybrid_scene_media",
+    "generated_stills",
+    "text_overlays",
+    "protagonist_reference",
+    "protagonist_reference_approved",
 ]
 
 
@@ -35,6 +40,11 @@ def ensure_project_state(session_state: Any) -> None:
     session_state.setdefault("scene_candidates", {})
     session_state.setdefault("scene_selection_status", {})
     session_state.setdefault("footage_credits", [])
+    session_state.setdefault("hybrid_scene_media", {})
+    session_state.setdefault("generated_stills", {})
+    session_state.setdefault("text_overlays", {})
+    session_state.setdefault("protagonist_reference", None)
+    session_state.setdefault("protagonist_reference_approved", False)
 
 
 def reset_footage_state(session_state: Any) -> None:
@@ -50,6 +60,11 @@ def reset_footage_state(session_state: Any) -> None:
         "footage_credits",
         "render_status",
         "visual_review_cache",
+        "hybrid_scene_media",
+        "generated_stills",
+        "text_overlays",
+        "protagonist_reference",
+        "protagonist_reference_approved",
     ]:
         session_state.pop(key, None)
 

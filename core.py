@@ -10,6 +10,9 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
+from directors_bible import apply_directors_bible
+from hybrid_media import text_overlay
+
 
 @dataclass
 class Scene:
@@ -706,8 +709,24 @@ def heuristic_storyboard(
                 pexels_query=plan["query"],
             ).as_dict()
         )
+        scenes[-1].update(
+            {
+                "scene_id": index,
+                "song_section": scenes[-1]["section"],
+                "lyric_or_musical_moment": scenes[-1]["lyric_excerpt"],
+                "story_purpose": scenes[-1]["purpose"],
+                "recommended_visual": scenes[-1]["visual"],
+                "preferred_source_type": (
+                    "generated_still"
+                    if any(term in scenes[-1]["section"].lower() for term in ["instrumental", "solo", "outro"])
+                    else "either"
+                ),
+                "text_overlay": text_overlay(),
+                "excluded": False,
+            }
+        )
 
-    return {
+    storyboard = {
         "concept": (
             "A coherent cinematic interpretation organized around the song's "
             f"actual sections in a {visual_world['name']} visual world, with "
@@ -735,8 +754,9 @@ def heuristic_storyboard(
             "recurring_motifs": visual_world.get("motifs", []),
         },
         "scenes": scenes,
-        "source": "local-section-aware-v0.5",
+        "source": "local-section-aware-v0.6",
     }
+    return apply_directors_bible(storyboard)
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -971,7 +991,9 @@ def normalize_storyboard(
         scenes.append(
             {
                 "scene": index,
+                "scene_id": int(item.get("scene_id") or item.get("scene") or index),
                 "section": section,
+                "song_section": str(item.get("song_section") or section),
                 "start": round(
                     start,
                     2,
@@ -988,17 +1010,29 @@ def normalize_storyboard(
                     2,
                 ),
                 "lyric_excerpt": lyric_excerpt,
+                "lyric_or_musical_moment": str(
+                    item.get("lyric_or_musical_moment") or lyric_excerpt
+                ),
                 "purpose": str(
                     item.get(
                         "purpose",
                         "",
                     )
                 ),
+                "story_purpose": str(
+                    item.get("story_purpose") or item.get("purpose", "")
+                ),
                 "visual": str(
                     item.get(
                         "visual",
                         "",
                     )
+                ),
+                "recommended_visual": str(
+                    item.get("recommended_visual") or item.get("visual", "")
+                ),
+                "preferred_source_type": str(
+                    item.get("preferred_source_type") or "either"
                 ),
                 "pexels_query": pexels_query,
                 "camera": str(
@@ -1019,12 +1053,13 @@ def normalize_storyboard(
                         "",
                     )
                 ),
+                "text_overlay": item.get("text_overlay") or text_overlay(),
+                "excluded": bool(item.get("excluded", False)),
             }
         )
 
     data["scenes"] = scenes
-
-    return data
+    return apply_directors_bible(data)
 
 
 def save_uploaded_file(

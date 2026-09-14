@@ -284,3 +284,193 @@ def render_selected_pexels_clips(
         )
 
     return output_path
+
+
+def animate_still_image(
+    image_path: str | Path,
+    duration: float,
+    aspect_ratio: str,
+    output_path: str | Path,
+    motion: str = "slow_push_in",
+    overlay: dict[str, Any] | None = None,
+) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    w, h = _dimensions(aspect_ratio)
+    frames = max(1, int(duration * 24))
+
+    if motion == "slow_zoom_out":
+        zoom_expr = "if(lte(zoom,1.0),1.08,max(1.0,zoom-0.0008))"
+    else:
+        zoom_expr = "min(zoom+0.0009,1.10)"
+
+    vf = (
+        f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+        f"crop={w}:{h},"
+        f"zoompan=z='{zoom_expr}':d={frames}:s={w}x{h}:fps=24,"
+        "format=yuv420p"
+    )
+
+    text = (overlay or {}).get("text", "")
+    if text:
+        safe_text = str(text).replace(":", "\\:").replace("'", "\\'")
+        size = {"small": 26, "medium": 38, "large": 54}.get(
+            (overlay or {}).get("size_preset", "medium"),
+            38,
+        )
+        position = (overlay or {}).get("position", "lower_third")
+        y = "h*0.78" if position == "lower_third" else "h*0.12"
+        vf += (
+            f",drawtext=text='{safe_text}':"
+            f"x=(w-text_w)/2:y={y}:fontsize={size}:"
+            "fontcolor=white:box=1:boxcolor=black@0.35:boxborderw=18"
+        )
+
+    subprocess.check_call(
+        [
+            "ffmpeg",
+            "-y",
+            "-loop",
+            "1",
+            "-i",
+            str(image_path),
+            "-t",
+            f"{duration:.3f}",
+            "-vf",
+            vf,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "22",
+            str(output_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    return output_path
+
+
+def render_hybrid_media(
+    audio_path: str | Path,
+    storyboard: dict[str, Any],
+    scene_media: dict[int, dict[str, Any]],
+    aspect_ratio: str,
+    output_path: str | Path,
+) -> Path:
+    scenes = [
+        scene
+        for scene in storyboard.get("scenes", [])
+        if not scene.get("excluded")
+    ]
+
+    if not scenes:
+        raise ValueError("Storyboard has no included scenes")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    w, h = _dimensions(aspect_ratio)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        normalized_clips = []
+
+        for index, scene in enumerate(scenes, start=1):
+            scene_id = int(scene.get("scene_id") or scene.get("scene") or index)
+            media = scene_media.get(scene_id)
+
+            if not media:
+                raise ValueError(f"No media selected for scene {scene_id}")
+
+            duration = max(
+                0.2,
+                float(scene.get("duration") or 0)
+                or float(scene.get("end", 0)) - float(scene.get("start", 0)),
+            )
+            normalized = tmp / f"scene_{index:03d}.mp4"
+
+            if media.get("source_type") == "generated_still":
+                animate_still_image(
+                    media["generated_image_path"],
+                    duration,
+                    aspect_ratio,
+                    normalized,
+                    overlay=scene.get("text_overlay"),
+                )
+            else:
+                source_clip = Path(media.get("downloaded_path") or media.get("path") or "")
+                if not source_clip.exists():
+                    raise FileNotFoundError(f"Clip file is missing for scene {scene_id}")
+                subprocess.check_call(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-stream_loop",
+                        "-1",
+                        "-i",
+                        str(source_clip),
+                        "-t",
+                        f"{duration:.3f}",
+                        "-vf",
+                        (
+                            f"scale={w}:{h}:"
+                            "force_original_aspect_ratio=increase,"
+                            f"crop={w}:{h},"
+                            "fps=24,"
+                            "format=yuv420p"
+                        ),
+                        "-an",
+                        "-c:v",
+                        "libx264",
+                        "-preset",
+                        "veryfast",
+                        "-crf",
+                        "22",
+                        str(normalized),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+            normalized_clips.append(normalized)
+
+        concat_file = tmp / "hybrid_clips.txt"
+        concat_file.write_text(
+            "\n".join(f"file '{clip.resolve().as_posix()}'" for clip in normalized_clips),
+            encoding="utf-8",
+        )
+        joined = tmp / "joined.mp4"
+        subprocess.check_call(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(joined)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.check_call(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(joined),
+                "-i",
+                str(audio_path),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-shortest",
+                str(output_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    return output_path

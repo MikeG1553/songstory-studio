@@ -9,6 +9,8 @@ def test_ensure_project_state_sets_defaults():
     assert state["storyboard"] is None
     assert state["selected_pexels_clips"] == {}
     assert state["downloaded_clip_paths"] == {}
+    assert state["protagonist_reference"] is None
+    assert state["protagonist_reference_approved"] is False
 
 
 def test_reset_footage_state_preserves_storyboard_and_audio():

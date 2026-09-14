@@ -16,6 +16,7 @@ from core import (
     normalize_storyboard,
     save_uploaded_file,
 )
+from directors_bible import normalize_bible_lists
 from footage_selector import (
     SelectionContext,
     automatic_select_for_scene,
@@ -24,8 +25,10 @@ from footage_selector import (
     rank_candidates,
     update_selection_context,
 )
+from hybrid_media import preserve_scene_media_state, select_hybrid_media_for_scene, text_overlay
+from image_generation import DEFAULT_IMAGE_MODEL, HERO_IMAGE_MODEL, generate_protagonist_reference, generate_still_image
 from project_state import clear_project_state, ensure_project_state, reset_footage_state
-from renderer import render_animatic, render_selected_pexels_clips
+from renderer import render_animatic, render_hybrid_media, render_selected_pexels_clips
 from video_provider import (
     PexelsAuthError,
     PexelsError,
@@ -35,7 +38,7 @@ from video_provider import (
 
 
 st.set_page_config(
-    page_title="SongStory Studio v0.5",
+    page_title="SongStory Studio v0.6",
     page_icon="🎬",
     layout="wide",
 )
@@ -276,6 +279,126 @@ def run_automatic_draft(
     st.success("Your first-draft music video is ready for review.")
 
 
+def run_hybrid_story_film(
+    pexels_key: str,
+    aspect_ratio: str,
+    openai_api_key: str = "",
+    openai_model: str = "gpt-5.6-luna",
+    image_model: str = DEFAULT_IMAGE_MODEL,
+) -> None:
+    storyboard = st.session_state.get("storyboard")
+    project_dir = st.session_state.get("project_dir")
+    audio_path = st.session_state.get("audio_path")
+
+    if not storyboard:
+        st.error("Create or load a storyboard before building the hybrid film.")
+        return
+    if not audio_path or not Path(audio_path).exists():
+        st.error("Upload the original song before building the hybrid film.")
+        return
+    if not openai_api_key:
+        st.error("Hybrid story-film mode requires OPENAI_API_KEY for visual review and still generation.")
+        return
+
+    bible = normalize_bible_lists(storyboard.get("directors_bible", {}))
+    visual_reviewer = create_openai_visual_reviewer(openai_api_key, openai_model)
+    protagonist_reference = (
+        st.session_state.get("protagonist_reference")
+        if st.session_state.get("protagonist_reference_approved")
+        else None
+    )
+    context = SelectionContext(aspect_ratio=aspect_ratio)
+    media_by_scene: dict[int, dict[str, Any]] = {}
+    statuses: dict[int, dict[str, Any]] = {}
+    continuity_notes: list[str] = []
+    visual_review_cache = st.session_state.setdefault("visual_review_cache", {})
+    progress = st.progress(0)
+    status = st.empty()
+
+    scenes = storyboard.get("scenes", [])
+    stills_dir = Path(project_dir) / "generated_stills"
+    clips_dir = Path(project_dir) / "pexels_clips"
+
+    for index, scene in enumerate(scenes, start=1):
+        scene_id = int(scene.get("scene_id") or scene.get("scene", index))
+        status.write(f"Selecting media for sequence {scene_id} of {len(scenes)}...")
+
+        selected, context = select_hybrid_media_for_scene(
+            scene,
+            bible,
+            lambda query: search_scene(query, pexels_key, aspect_ratio) if pexels_key else [],
+            context,
+            stills_dir,
+            visual_reviewer=visual_reviewer,
+            openai_image_key=openai_api_key,
+            image_model=image_model,
+            protagonist_reference=protagonist_reference,
+            visual_review_cache=visual_review_cache,
+            continuity_summary="; ".join(continuity_notes[-4:]),
+        )
+
+        if selected.get("source_type") == "stock_video":
+            output_path = clips_dir / f"scene_{scene_id:03d}_{selected['id']}.mp4"
+            try:
+                download_clip(selected["video_url"], output_path)
+                selected["downloaded_path"] = str(output_path)
+            except PexelsError as exc:
+                selected = generate_still_image(
+                    scene,
+                    bible,
+                    stills_dir / f"scene_{scene_id:03d}.png",
+                    api_key=openai_api_key,
+                    model=image_model,
+                    protagonist_reference=protagonist_reference,
+                )
+                selected["source_type"] = "generated_still"
+                selected["stock_fallback_reason"] = str(exc)
+
+        media_by_scene = preserve_scene_media_state(media_by_scene, scene_id, selected)
+        statuses[scene_id] = {
+            "status": selected.get("status") or "selected",
+            "source_type": selected.get("source_type"),
+            "query": selected.get("source_query") or selected.get("query", ""),
+            "reason": (
+                selected.get("generation_error")
+                or selected.get("visual_review_reason")
+                or selected.get("stock_fallback_reason", "")
+            ),
+        }
+        continuity_notes.append(
+            f"Sequence {scene_id}: {selected.get('source_type')} {statuses[scene_id]['reason']}"
+        )
+        progress.progress(index / max(len(scenes), 1))
+
+    st.session_state.hybrid_scene_media = media_by_scene
+    st.session_state.scene_selection_status = statuses
+
+    needs_attention = {
+        scene_id: status_info
+        for scene_id, status_info in statuses.items()
+        if status_info.get("status") == "Needs Attention"
+    }
+    if needs_attention:
+        status.empty()
+        st.error(
+            "One or more protagonist-reference scenes need attention before rendering. "
+            "Review the error, then retry that scene or regenerate the protagonist reference."
+        )
+        return
+
+    out = Path(project_dir) / "songstory_hybrid_story_film.mp4"
+    status.write("Rendering hybrid story film with the original song...")
+    try:
+        render_hybrid_media(audio_path, storyboard, media_by_scene, aspect_ratio, out)
+    except Exception as exc:
+        st.error(f"Hybrid render failed: {exc}")
+        return
+
+    st.session_state.final_video_path = str(out)
+    st.session_state.render_status = "complete"
+    st.success("Hybrid story-film draft is ready for review.")
+
+
 def replace_scene_clip(
     scene: dict[str, Any],
     clip: dict[str, Any],
@@ -313,9 +436,9 @@ def replace_scene_clip(
 st.markdown(
     """
 <div class="hero">
-<h1>🎬 SongStory Studio v0.5</h1>
-<p>Upload a song, add lyrics, build a coherent storyboard, and generate a complete first-draft music video from automatically selected Pexels footage.</p>
-<p class="subtle">Normal workflow: upload → analyze → create story → find footage → build draft → replace only the scenes that miss.</p>
+<h1>🎬 SongStory Studio v0.6</h1>
+<p>Upload a song and lyrics, build a Director's Bible, then create a hybrid cinematic story film from reviewed stock footage and generated stills.</p>
+<p class="subtle">Workflow: understand story → director's bible → 12–16 sequences → stock when good → generated still when stock misses → animated film draft.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -371,6 +494,12 @@ with st.sidebar:
     model = st.text_input(
         "Analysis model",
         value=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+    )
+
+    image_model = st.text_input(
+        "Image model",
+        value=os.getenv("OPENAI_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
+        help=f"Default still/reference model. Use {HERO_IMAGE_MODEL} later for important hero scenes.",
     )
 
     pexels_key = get_secret("PEXELS_API_KEY")
@@ -536,7 +665,94 @@ if storyboard:
         f"Song duration: {st.session_state.get('audio_duration', 0):.1f}s"
     )
 
-    st.subheader("4. Story Sequences")
+    st.subheader("4. Director's Bible")
+    bible = normalize_bible_lists(storyboard.get("directors_bible", {}))
+    bible_a, bible_b = st.columns(2)
+    with bible_a:
+        bible["story_arc"] = st.text_area("Story arc", value=bible.get("story_arc", ""), height=90, key="bible_story_arc")
+        bible["protagonist_description"] = st.text_area("Protagonist", value=bible.get("protagonist_description", ""), height=80, key="bible_protagonist")
+        bible["era"] = st.text_input("Era", value=bible.get("era", ""), key="bible_era")
+        bible["locations"] = st.text_area("Locations", value=", ".join(bible.get("locations", [])), height=70, key="bible_locations")
+        bible["color_palette"] = st.text_area("Color palette", value=", ".join(bible.get("color_palette", [])), height=70, key="bible_palette")
+    with bible_b:
+        bible["recurring_motifs"] = st.text_area("Recurring motifs", value=", ".join(bible.get("recurring_motifs", [])), height=70, key="bible_motifs")
+        bible["positive_visual_cues"] = st.text_area("Positive visual cues", value=", ".join(bible.get("positive_visual_cues", [])), height=90, key="bible_positive")
+        bible["negative_visual_cues"] = st.text_area("Negative visual cues", value=", ".join(bible.get("negative_visual_cues", [])), height=90, key="bible_negative")
+        bible["tone_progression"] = st.text_area("Tone progression", value=bible.get("tone_progression", ""), height=70, key="bible_tone")
+        bible["ending_mood"] = st.text_input("Ending mood", value=bible.get("ending_mood", ""), key="bible_ending")
+
+    if st.button("Apply Director's Bible"):
+        storyboard["directors_bible"] = normalize_bible_lists(
+            {
+                "story_arc": st.session_state.bible_story_arc,
+                "protagonist_description": st.session_state.bible_protagonist,
+                "era": st.session_state.bible_era,
+                "locations": st.session_state.bible_locations,
+                "color_palette": st.session_state.bible_palette,
+                "recurring_motifs": st.session_state.bible_motifs,
+                "positive_visual_cues": st.session_state.bible_positive,
+                "negative_visual_cues": st.session_state.bible_negative,
+                "tone_progression": st.session_state.bible_tone,
+                "ending_mood": st.session_state.bible_ending,
+            }
+        )
+        st.session_state.storyboard = storyboard
+        clear_outputs_for_new_storyboard()
+        st.success("Director's Bible updated.")
+
+    protagonist_reference = st.session_state.get("protagonist_reference")
+    reference_path = ""
+    if protagonist_reference:
+        reference_path = protagonist_reference.get("reference_image_path") or protagonist_reference.get("generated_image_path") or ""
+
+    st.caption("Protagonist visual reference")
+    if reference_path and Path(reference_path).exists():
+        st.image(reference_path, caption="Current protagonist reference", width=320)
+        if st.session_state.get("protagonist_reference_approved"):
+            st.success("Approved character reference will be used for protagonist scenes.")
+        else:
+            st.info("Approve this character to use it for protagonist continuity.")
+    else:
+        st.info("Generate one reusable character reference before building generated protagonist scenes.")
+
+    ref_col1, ref_col2, ref_col3 = st.columns(3)
+    with ref_col1:
+        if st.button("Generate Protagonist Reference", disabled=bool(reference_path)):
+            try:
+                reference = generate_protagonist_reference(
+                    normalize_bible_lists(storyboard.get("directors_bible", {})),
+                    Path(st.session_state.project_dir) / "generated_stills" / "protagonist_reference.png",
+                    api_key=openai_key,
+                    model=image_model,
+                )
+                st.session_state.protagonist_reference = reference
+                st.session_state.protagonist_reference_approved = False
+                st.success("Protagonist reference generated.")
+            except Exception as exc:
+                st.error(f"Protagonist reference generation failed: {exc}")
+    with ref_col2:
+        if st.button("Regenerate Protagonist Reference"):
+            try:
+                reference = generate_protagonist_reference(
+                    normalize_bible_lists(storyboard.get("directors_bible", {})),
+                    Path(st.session_state.project_dir) / "generated_stills" / "protagonist_reference.png",
+                    api_key=openai_key,
+                    model=image_model,
+                )
+                st.session_state.protagonist_reference = reference
+                st.session_state.protagonist_reference_approved = False
+                st.success("Protagonist reference regenerated.")
+            except Exception as exc:
+                st.error(f"Protagonist reference regeneration failed: {exc}")
+    with ref_col3:
+        if st.button("Approve/Use This Character", disabled=not bool(reference_path)):
+            reference = dict(st.session_state.get("protagonist_reference") or {})
+            reference["approved"] = True
+            st.session_state.protagonist_reference = reference
+            st.session_state.protagonist_reference_approved = True
+            st.success("This character will be used for protagonist scenes.")
+
+    st.subheader("5. Story Sequences")
     scenes = storyboard.get("scenes", [])
 
     edited = st.data_editor(
@@ -546,14 +762,25 @@ if storyboard:
         num_rows="dynamic",
         column_config={
             "scene": st.column_config.NumberColumn("Scene", width="small"),
+            "scene_id": st.column_config.NumberColumn("Sequence ID", width="small"),
             "section": st.column_config.TextColumn("Song section", width="medium"),
+            "song_section": st.column_config.TextColumn("Song section v0.6", width="medium"),
             "start": st.column_config.NumberColumn("Start", format="%.2f"),
             "end": st.column_config.NumberColumn("End", format="%.2f"),
             "duration": st.column_config.NumberColumn("Sec", format="%.2f", disabled=True),
             "lyric_excerpt": st.column_config.TextColumn("Lyric / musical moment", width="medium"),
+            "lyric_or_musical_moment": st.column_config.TextColumn("Lyric/musical moment v0.6", width="medium"),
+            "story_purpose": st.column_config.TextColumn("Story purpose", width="large"),
             "visual": st.column_config.TextColumn("Creative visual concept", width="large"),
+            "recommended_visual": st.column_config.TextColumn("Recommended visual", width="large"),
+            "preferred_source_type": st.column_config.SelectboxColumn(
+                "Preferred source",
+                options=["stock_video", "generated_still", "either"],
+                width="medium",
+            ),
             "pexels_query": st.column_config.TextColumn("Short Pexels query", width="medium"),
             "camera": st.column_config.TextColumn("Camera", width="medium"),
+            "excluded": st.column_config.CheckboxColumn("Exclude", width="small"),
         },
         key="scene_editor",
     )
@@ -669,20 +896,39 @@ if storyboard:
                     st.write(line)
 
     st.divider()
-    st.subheader("6. Review and Replace Only Bad Scenes")
+    st.subheader("6. Build Hybrid Story Film")
+    st.write(
+        "Hybrid mode uses good AI-reviewed stock footage when it passes, then falls back "
+        "to a generated cinematic still when stock is unrelated."
+    )
+    if st.button(
+        "Build Hybrid Story Film",
+        type="primary",
+        use_container_width=True,
+        disabled=not bool(openai_key),
+    ):
+        run_hybrid_story_film(pexels_key, aspect_ratio, openai_key, model, image_model)
+
+    if not openai_key:
+        st.warning("Hybrid story-film mode requires OPENAI_API_KEY for visual review and still generation.")
+
+    st.divider()
+    st.subheader("7. Review and Replace Only Bad Scenes")
 
     selections = st.session_state.get("selected_pexels_clips", {})
+    hybrid_media = st.session_state.get("hybrid_scene_media", {})
     downloaded_paths = st.session_state.get("downloaded_clip_paths", {})
     candidates_by_scene = st.session_state.get("scene_candidates", {})
     statuses = st.session_state.get("scene_selection_status", {})
 
-    if not selections and not statuses:
+    if not selections and not statuses and not hybrid_media:
         st.info("Build an automatic draft first. Review controls appear after the app has selected footage.")
     else:
         for index, scene in enumerate(storyboard.get("scenes", []), start=1):
-            scene_number = int(scene.get("scene", index))
+            scene_number = int(scene.get("scene_id") or scene.get("scene", index))
             status_info = statuses.get(scene_number, {})
             selected_clip = selections.get(scene_number)
+            selected_media = hybrid_media.get(scene_number)
 
             with st.container():
                 st.markdown('<div class="scene-card">', unsafe_allow_html=True)
@@ -692,10 +938,26 @@ if storyboard:
                     f"{scene_duration(scene):.1f}s"
                 )
                 st.write(f"Lyric/musical moment: {scene.get('lyric_excerpt', '')}")
-                st.write(f"Visual concept: {scene.get('visual', '')}")
+                st.write(f"Visual concept: {scene.get('recommended_visual') or scene.get('visual', '')}")
                 st.write(f"Pexels search: `{status_info.get('query') or scene.get('pexels_query', '')}`")
 
-                if selected_clip:
+                if selected_media:
+                    st.caption(f"Source type: {selected_media.get('source_type')}")
+                    if selected_media.get("status") == "Needs Attention":
+                        st.error(selected_media.get("generation_error") or "Generated still needs attention.")
+                    elif selected_media.get("source_type") == "generated_still":
+                        st.image(selected_media.get("generated_image_path"))
+                        st.caption(selected_media.get("image_prompt", ""))
+                    elif selected_media.get("downloaded_path"):
+                        st.video(selected_media["downloaded_path"])
+                    if selected_media.get("visual_fit_score") is not None:
+                        st.caption(
+                            f"Visual fit: {selected_media['visual_fit_score']}/100 | "
+                            f"{selected_media.get('visual_review_reason', '')}"
+                        )
+                    if selected_media.get("stock_fallback_reason"):
+                        st.caption(f"Stock fallback: {selected_media['stock_fallback_reason']}")
+                elif selected_clip:
                     preview_path = downloaded_paths.get(scene_number) or selected_clip.get("video_url")
                     st.video(preview_path)
                     creator = selected_clip.get("creator", "Pexels contributor")
@@ -713,6 +975,93 @@ if storyboard:
                         st.caption("Selected in basic metadata-only mode.")
                 else:
                     st.warning(status_info.get("message") or "No clip selected for this scene.")
+
+                overlay = scene.get("text_overlay") or text_overlay()
+                with st.expander("Text overlay"):
+                    overlay_text = st.text_input("Overlay text", value=overlay.get("text", ""), key=f"overlay_text_{scene_number}")
+                    overlay_position = st.selectbox(
+                        "Position",
+                        ["lower_third", "top"],
+                        index=0 if overlay.get("position", "lower_third") == "lower_third" else 1,
+                        key=f"overlay_pos_{scene_number}",
+                    )
+                    overlay_size = st.selectbox(
+                        "Size",
+                        ["small", "medium", "large"],
+                        index=["small", "medium", "large"].index(overlay.get("size_preset", "medium")),
+                        key=f"overlay_size_{scene_number}",
+                    )
+                    if st.button("Apply overlay", key=f"apply_overlay_{scene_number}"):
+                        scene["text_overlay"] = text_overlay(
+                            overlay_text,
+                            start=0,
+                            duration=scene_duration(scene),
+                            position=overlay_position,
+                            size_preset=overlay_size,
+                        )
+                        st.session_state.storyboard = storyboard
+                        st.success("Overlay updated.")
+
+                c_switch1, c_switch2, c_switch3 = st.columns(3)
+                with c_switch1:
+                    if st.button("Switch to Generated Still", key=f"switch_still_{scene_number}"):
+                        try:
+                            generated = generate_still_image(
+                                scene,
+                                normalize_bible_lists(storyboard.get("directors_bible", {})),
+                                Path(st.session_state.project_dir) / "generated_stills" / f"scene_{scene_number:03d}.png",
+                                api_key=openai_key,
+                                model=image_model,
+                                protagonist_reference=(
+                                    st.session_state.get("protagonist_reference")
+                                    if st.session_state.get("protagonist_reference_approved")
+                                    else None
+                                ),
+                            )
+                            generated["source_type"] = "generated_still"
+                            st.session_state.hybrid_scene_media = preserve_scene_media_state(
+                                hybrid_media,
+                                scene_number,
+                                generated,
+                            )
+                            if generated.get("status") == "Needs Attention":
+                                st.error(generated.get("generation_error") or "Generated still needs attention.")
+                            else:
+                                st.success("Scene switched to generated still.")
+                        except Exception as exc:
+                            st.error(f"Still generation failed: {exc}")
+                with c_switch2:
+                    if st.button("Regenerate Still", key=f"regen_still_{scene_number}"):
+                        try:
+                            generated = generate_still_image(
+                                scene,
+                                normalize_bible_lists(storyboard.get("directors_bible", {})),
+                                Path(st.session_state.project_dir) / "generated_stills" / f"scene_{scene_number:03d}_regen.png",
+                                api_key=openai_key,
+                                model=image_model,
+                                protagonist_reference=(
+                                    st.session_state.get("protagonist_reference")
+                                    if st.session_state.get("protagonist_reference_approved")
+                                    else None
+                                ),
+                            )
+                            generated["source_type"] = "generated_still"
+                            st.session_state.hybrid_scene_media = preserve_scene_media_state(
+                                hybrid_media,
+                                scene_number,
+                                generated,
+                            )
+                            if generated.get("status") == "Needs Attention":
+                                st.error(generated.get("generation_error") or "Generated still needs attention.")
+                            else:
+                                st.success("Still regenerated.")
+                        except Exception as exc:
+                            st.error(f"Still regeneration failed: {exc}")
+                with c_switch3:
+                    excluded = st.checkbox("Exclude scene", value=bool(scene.get("excluded")), key=f"exclude_{scene_number}")
+                    if excluded != bool(scene.get("excluded")):
+                        scene["excluded"] = excluded
+                        st.session_state.storyboard = storyboard
 
                 replacement_query = st.text_input(
                     "Replacement search",
