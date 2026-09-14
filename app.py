@@ -850,6 +850,7 @@ if storyboard:
                 st.session_state.protagonist_reference = reference
                 st.session_state.protagonist_reference_approved = False
                 st.success("Protagonist reference generated.")
+                st.rerun()
             except Exception as exc:
                 st.error(f"Protagonist reference generation failed: {exc}")
     with ref_col2:
@@ -864,6 +865,7 @@ if storyboard:
                 st.session_state.protagonist_reference = reference
                 st.session_state.protagonist_reference_approved = False
                 st.success("Protagonist reference regenerated.")
+                st.rerun()
             except Exception as exc:
                 st.error(f"Protagonist reference regeneration failed: {exc}")
     with ref_col3:
@@ -873,6 +875,7 @@ if storyboard:
             st.session_state.protagonist_reference = reference
             st.session_state.protagonist_reference_approved = True
             st.success("This character will be used for protagonist scenes.")
+            st.rerun()
 
     st.subheader("5. Story Sequences")
     scenes = storyboard.get("scenes", [])
