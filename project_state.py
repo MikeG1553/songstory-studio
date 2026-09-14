@@ -18,6 +18,7 @@ PROJECT_KEYS = [
     "animatic_path",
     "footage_credits",
     "render_status",
+    "visual_review_cache",
 ]
 
 
@@ -48,6 +49,7 @@ def reset_footage_state(session_state: Any) -> None:
         "animatic_path",
         "footage_credits",
         "render_status",
+        "visual_review_cache",
     ]:
         session_state.pop(key, None)
 

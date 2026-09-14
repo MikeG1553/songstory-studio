@@ -19,7 +19,7 @@ from core import (
 from footage_selector import (
     SelectionContext,
     automatic_select_for_scene,
-    create_openai_preview_ranker,
+    create_openai_visual_reviewer,
     fallback_queries,
     rank_candidates,
     update_selection_context,
@@ -127,6 +127,7 @@ def run_automatic_draft(
     aspect_ratio: str,
     openai_api_key: str = "",
     openai_model: str = "gpt-5.6-luna",
+    quality_mode: str = "ai_reviewed",
 ) -> None:
     storyboard = st.session_state.get("storyboard")
     project_dir = st.session_state.get("project_dir")
@@ -144,6 +145,13 @@ def run_automatic_draft(
         st.error("Add PEXELS_API_KEY in Streamlit Secrets or your environment.")
         return
 
+    if quality_mode == "ai_reviewed" and not openai_api_key:
+        st.error(
+            "High-quality automatic footage selection requires an OpenAI API key "
+            "so SongStory Studio can visually evaluate Pexels clips before using them."
+        )
+        return
+
     scenes = storyboard.get("scenes", [])
 
     if not scenes:
@@ -155,10 +163,16 @@ def run_automatic_draft(
     candidates_by_scene: dict[int, list[dict[str, Any]]] = {}
     statuses: dict[int, dict[str, Any]] = {}
     context = SelectionContext(aspect_ratio=aspect_ratio)
-    preview_ranker = create_openai_preview_ranker(openai_api_key, openai_model)
+    visual_reviewer = (
+        create_openai_visual_reviewer(openai_api_key, openai_model)
+        if quality_mode == "ai_reviewed"
+        else None
+    )
+    visual_review_cache = st.session_state.setdefault("visual_review_cache", {})
     clips_dir = Path(project_dir) / "pexels_clips"
     progress = st.progress(0)
     status = st.empty()
+    continuity_notes: list[str] = []
 
     for index, scene in enumerate(scenes, start=1):
         scene_number = int(scene.get("scene", index))
@@ -169,7 +183,11 @@ def run_automatic_draft(
                 scene,
                 lambda query: search_scene(query, api_key, aspect_ratio),
                 context,
-                preview_ranker=preview_ranker,
+                visual_reviewer=visual_reviewer,
+                require_visual_review=quality_mode == "ai_reviewed",
+                project_context=storyboard,
+                continuity_summary="; ".join(continuity_notes[-4:]),
+                visual_review_cache=visual_review_cache,
             )
         except PexelsAuthError as exc:
             st.error(str(exc))
@@ -186,6 +204,7 @@ def run_automatic_draft(
             "status": result["status"],
             "query": result.get("query"),
             "message": result.get("message", ""),
+            "visual_threshold": result.get("visual_threshold"),
         }
 
         if result["selected"]:
@@ -206,6 +225,13 @@ def run_automatic_draft(
             selected[scene_number] = choice
             downloaded[scene_number] = str(output_path)
             context = update_selection_context(context, choice)
+            continuity_notes.append(
+                (
+                    f"Scene {scene_number}: {choice.get('source_query') or choice.get('query')} "
+                    f"fit {choice.get('visual_fit_score', 'metadata-only')} "
+                    f"{choice.get('visual_review_reason', '')}"
+                ).strip()
+            )
 
         progress.progress(index / len(scenes))
 
@@ -586,16 +612,42 @@ if storyboard:
     st.subheader("5. Build Automatic Draft Video")
 
     st.write(
-        "This searches Pexels for every story sequence, ranks the returned clips, "
-        "downloads only the selected footage, and renders a complete first draft."
+        "Recommended mode searches Pexels, shortlists metadata-ranked clips, then uses "
+        "OpenAI visual review of preview images before downloading only accepted footage."
     )
 
     if st.button(
-        "Build Automatic Draft Video",
+        "Build AI-Reviewed Automatic Draft",
         type="primary",
         use_container_width=True,
+        disabled=not bool(openai_key),
     ):
-        run_automatic_draft(pexels_key, aspect_ratio, openai_key, model)
+        run_automatic_draft(
+            pexels_key,
+            aspect_ratio,
+            openai_key,
+            model,
+            quality_mode="ai_reviewed",
+        )
+
+    if not openai_key:
+        st.warning(
+            "High-quality automatic footage selection requires an OpenAI API key so "
+            "SongStory Studio can visually evaluate Pexels clips before using them."
+        )
+
+    with st.expander("Basic metadata-only draft"):
+        st.warning(
+            "Basic mode uses Pexels metadata only and may choose visually unrelated footage."
+        )
+        if st.button("Build Basic Automatic Draft", use_container_width=True):
+            run_automatic_draft(
+                pexels_key,
+                aspect_ratio,
+                openai_key,
+                model,
+                quality_mode="basic",
+            )
 
     if st.session_state.get("final_video_path") and Path(st.session_state.final_video_path).exists():
         st.success("Automatic draft available.")
@@ -652,6 +704,13 @@ if storyboard:
                         st.markdown(f"{creator} - [View on Pexels]({page_url})")
                     else:
                         st.caption(creator)
+                    if selected_clip.get("visual_fit_score") is not None:
+                        st.caption(
+                            f"Visual fit: {selected_clip['visual_fit_score']}/100 | "
+                            f"{selected_clip.get('visual_review_reason', '')}"
+                        )
+                    elif selected_clip.get("basic_metadata_mode"):
+                        st.caption("Selected in basic metadata-only mode.")
                 else:
                     st.warning(status_info.get("message") or "No clip selected for this scene.")
 

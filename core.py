@@ -245,6 +245,60 @@ def infer_visual_world(lyrics: str) -> dict[str, Any]:
                 "revolver candle table",
                 "storm desert landscape",
             ],
+            "positive_cues": [
+                "weathered male drifter",
+                "bounty hunter",
+                "outlaw",
+                "dusty road",
+                "horse",
+                "western landscape",
+                "desert",
+                "frontier town",
+                "old wooden buildings",
+                "old church",
+                "graveyard",
+                "revolver",
+                "storm clouds",
+                "desert sunset",
+                "cinematic realism",
+            ],
+            "negative_cues": [
+                "contemporary bedrooms",
+                "sleeping",
+                "lying on beds",
+                "lying on floors",
+                "yoga",
+                "meditation",
+                "generic wellness",
+                "modern lifestyle footage",
+                "musicians performing",
+                "singers",
+                "flute players",
+                "guitar players",
+                "fire performers",
+                "dancers",
+                "circus performers",
+                "festivals",
+                "modern city nightlife",
+                "modern fashion scenes",
+                "unrelated contemporary women indoors",
+                "children",
+                "office footage",
+                "corporate imagery",
+            ],
+            "protagonist_description": (
+                "weathered male drifter or bounty hunter, solitary, hardened, "
+                "rugged, period-appropriate western clothing"
+            ),
+            "era": "historical or revisionist Western, not contemporary",
+            "locations": [
+                "dusty roads",
+                "western landscapes",
+                "desert",
+                "frontier town",
+                "old church",
+                "graveyard",
+            ],
             "description": (
                 "Southern Gothic Western: dusty roads, lonely drifters, horses, "
                 "frontier towns, old churches, graveyards, storm light, and "
@@ -270,6 +324,23 @@ def infer_visual_world(lyrics: str) -> dict[str, Any]:
                 "empty highway rain",
                 "small town street night",
             ],
+            "positive_cues": [
+                "rural roads",
+                "fields",
+                "small towns",
+                "porches",
+                "weathered homes",
+                "quiet landscapes",
+            ],
+            "negative_cues": [
+                "corporate imagery",
+                "office footage",
+                "generic smiling people",
+                "unrelated performance footage",
+            ],
+            "protagonist_description": "grounded rural character, understated and naturalistic",
+            "era": "contemporary or timeless rural Americana",
+            "locations": ["rural roads", "fields", "farmhouses", "small towns"],
             "description": (
                 "Rural Americana: roads, fields, porches, small towns, weather, "
                 "and quiet human-scale details."
@@ -297,6 +368,21 @@ def infer_visual_world(lyrics: str) -> dict[str, Any]:
             "wide landscape sunset",
             "storm clouds landscape",
         ],
+        "positive_cues": [
+            "cinematic realism",
+            "lonely roads",
+            "weather",
+            "landscape",
+            "solitary character",
+        ],
+        "negative_cues": [
+            "generic corporate imagery",
+            "unrelated performance footage",
+            "stock-photo lifestyle posing",
+        ],
+        "protagonist_description": "solitary grounded protagonist consistent with the song story",
+        "era": "visually consistent with the selected treatment",
+        "locations": ["roads", "landscapes", "interiors that fit the story"],
         "description": (
             "Grounded cinematic realism with recurring locations, weather, "
             "objects, and emotional continuity."
@@ -638,6 +724,16 @@ def heuristic_storyboard(
             "Establish → develop through verses → reinforce choruses → "
             "shift at bridge/instrumental → resolve in final chorus/outro."
         ),
+        "visual_world": {
+            "name": visual_world.get("name", "Grounded Cinematic"),
+            "description": visual_world.get("description", ""),
+            "positive_cues": visual_world.get("positive_cues", []),
+            "negative_cues": visual_world.get("negative_cues", []),
+            "protagonist_description": visual_world.get("protagonist_description", ""),
+            "era": visual_world.get("era", ""),
+            "locations": visual_world.get("locations", []),
+            "recurring_motifs": visual_world.get("motifs", []),
+        },
         "scenes": scenes,
         "source": "local-section-aware-v0.5",
     }
