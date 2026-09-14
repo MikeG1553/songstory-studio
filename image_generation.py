@@ -99,6 +99,14 @@ def _decode_image_response(response: Any, output: Path) -> None:
     output.write_bytes(base64.b64decode(image_b64))
 
 
+def _api_error_details(exc: Exception) -> dict[str, str]:
+    code = getattr(exc, "code", "") or getattr(exc, "type", "") or exc.__class__.__name__
+    return {
+        "message": str(exc),
+        "code": str(code),
+    }
+
+
 def build_protagonist_reference_prompt(directors_bible: dict[str, Any]) -> str:
     positive = ", ".join(directors_bible.get("positive_visual_cues", []))
     negative = ", ".join(directors_bible.get("negative_visual_cues", []))
@@ -257,27 +265,27 @@ def generate_still_image(
                     prompt=prompt,
                     size="1536x1024",
                     input_fidelity="high",
-                    response_format="b64_json",
                 )
         else:
             response = openai_client.images.generate(
                 model=actual_model,
                 prompt=prompt,
                 size="1536x864",
-                response_format="b64_json",
             )
         _decode_image_response(response, output)
     except Exception as exc:
-        if uses_reference:
-            return {
-                "scene_id": scene.get("scene_id") or scene.get("scene"),
-                "status": "Needs Attention",
-                "image_prompt": prompt,
-                "generated_image_path": "",
-                "generation_error": str(exc),
-                "generation_metadata": metadata,
-            }
-        raise
+        error = _api_error_details(exc)
+        metadata["generation_error"] = error["message"]
+        metadata["generation_error_code"] = error["code"]
+        return {
+            "scene_id": scene.get("scene_id") or scene.get("scene"),
+            "status": "Needs Attention",
+            "image_prompt": prompt,
+            "generated_image_path": "",
+            "generation_error": error["message"],
+            "generation_error_code": error["code"],
+            "generation_metadata": metadata,
+        }
 
     return {
         "scene_id": scene.get("scene_id") or scene.get("scene"),

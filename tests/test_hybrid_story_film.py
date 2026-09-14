@@ -286,8 +286,9 @@ def _image_response():
 
 
 class FakeImages:
-    def __init__(self, fail_edit=False):
+    def __init__(self, fail_edit=False, fail_generate=False):
         self.fail_edit = fail_edit
+        self.fail_generate = fail_generate
         self.edit_calls = []
         self.generate_calls = []
 
@@ -301,12 +302,16 @@ class FakeImages:
 
     def generate(self, **kwargs):
         self.generate_calls.append(kwargs)
+        if self.fail_generate:
+            error = RuntimeError("invalid image generation request")
+            error.code = "bad_request"
+            raise error
         return _image_response()
 
 
 class FakeOpenAIClient:
-    def __init__(self, fail_edit=False):
-        self.images = FakeImages(fail_edit=fail_edit)
+    def __init__(self, fail_edit=False, fail_generate=False):
+        self.images = FakeImages(fail_edit=fail_edit, fail_generate=fail_generate)
 
 
 def test_reference_image_file_is_passed_to_openai_edit_call():
@@ -333,6 +338,7 @@ def test_reference_image_file_is_passed_to_openai_edit_call():
 
     assert fake_client.images.image_bytes == b"reference bytes"
     assert fake_client.images.edit_calls
+    assert "response_format" not in fake_client.images.edit_calls[0]
     assert not fake_client.images.generate_calls
     assert result["generation_metadata"]["generation_mode"] == "reference_edit"
 
@@ -393,6 +399,7 @@ def test_non_protagonist_scene_uses_text_generation_without_reference():
     assert fake_client.images.generate_calls
     assert not fake_client.images.edit_calls
     assert fake_client.images.generate_calls[0]["model"] == DEFAULT_IMAGE_MODEL
+    assert "response_format" not in fake_client.images.generate_calls[0]
     assert result["generation_metadata"]["generation_mode"] == "text_generation"
     assert result["generation_metadata"]["uses_protagonist_reference"] is False
 
@@ -424,6 +431,61 @@ def test_reference_edit_failure_returns_needs_attention_without_fallback():
     assert fake_client.images.edit_calls
     assert not fake_client.images.generate_calls
     assert result["generation_metadata"]["generation_mode"] == "reference_edit"
+    assert result["generated_image_path"] == ""
+
+
+def test_generate_decodes_b64_json_without_response_format_argument():
+    storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
+    scene = {
+        "scene_id": 27,
+        "section": "Instrumental Break",
+        "story_purpose": "Set the scale of the empty frontier.",
+        "recommended_visual": "wide storm clouds over empty desert landscape",
+    }
+    fake_client = FakeOpenAIClient()
+
+    with TemporaryDirectory() as temp_dir:
+        output_path = Path(temp_dir) / "scene.png"
+        result = generate_still_image(
+            scene,
+            storyboard["directors_bible"],
+            output_path,
+            api_key="test-key",
+            model=DEFAULT_IMAGE_MODEL,
+            openai_client=fake_client,
+        )
+
+        assert output_path.read_bytes() == b"fake image bytes"
+
+    assert result["generated_image_path"] == str(output_path)
+    assert "response_format" not in fake_client.images.generate_calls[0]
+
+
+def test_ordinary_generation_bad_request_returns_needs_attention_without_crashing():
+    storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
+    scene = {
+        "scene_id": 28,
+        "section": "Instrumental Break",
+        "story_purpose": "Set the scale of the empty frontier.",
+        "recommended_visual": "wide storm clouds over empty desert landscape",
+    }
+    fake_client = FakeOpenAIClient(fail_generate=True)
+
+    with TemporaryDirectory() as temp_dir:
+        result = generate_still_image(
+            scene,
+            storyboard["directors_bible"],
+            Path(temp_dir) / "scene.png",
+            api_key="test-key",
+            model=DEFAULT_IMAGE_MODEL,
+            openai_client=fake_client,
+        )
+
+    assert result["status"] == "Needs Attention"
+    assert result["generation_error_code"] == "bad_request"
+    assert "invalid image generation request" in result["generation_error"]
+    assert result["generation_metadata"]["generation_mode"] == "text_generation"
+    assert result["generation_metadata"]["generation_error_code"] == "bad_request"
     assert result["generated_image_path"] == ""
 
 

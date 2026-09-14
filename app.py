@@ -380,9 +380,11 @@ def run_hybrid_story_film(
     }
     if needs_attention:
         status.empty()
+        failed_sequences = ", ".join(str(scene_id) for scene_id in sorted(needs_attention))
+        first_reason = next(iter(needs_attention.values())).get("reason", "")
         st.error(
-            "One or more protagonist-reference scenes need attention before rendering. "
-            "Review the error, then retry that scene or regenerate the protagonist reference."
+            f"Hybrid build stopped because sequence {failed_sequences} needs attention. "
+            f"{first_reason}"
         )
         return
 
