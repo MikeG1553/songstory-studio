@@ -903,6 +903,7 @@ if storyboard:
                 options=["stock_video", "generated_still", "either"],
                 width="medium",
             ),
+            "contains_protagonist": st.column_config.CheckboxColumn("Contains protagonist", width="small"),
             "pexels_query": st.column_config.TextColumn("Short Pexels query", width="medium"),
             "camera": st.column_config.TextColumn("Camera", width="medium"),
             "excluded": st.column_config.CheckboxColumn("Exclude", width="small"),

@@ -26,35 +26,39 @@ PROTAGONIST_REFERENCE_CUES = [
 PROTAGONIST_TERMS = {
     "protagonist",
     "drifter",
-    "bounty",
     "outlaw",
     "rider",
     "cowboy",
     "stranger",
-    "hunter",
     "gunman",
     "gunslinger",
-    "man",
-    "male",
-    "he",
-    "his",
+}
+
+PROTAGONIST_VISUAL_PHRASES = {
+    "protagonist",
+    "bounty hunter",
+    "drifter",
+    "gunslinger",
+    "gunman",
+    "cowboy",
+    "rider",
+    "outlaw",
 }
 
 
 def scene_includes_protagonist(scene: dict[str, Any]) -> bool:
+    if "contains_protagonist" in scene:
+        return bool(scene.get("contains_protagonist"))
+
     text = " ".join(
         str(scene.get(key, ""))
         for key in [
-            "story_purpose",
-            "purpose",
-            "lyric_or_musical_moment",
-            "lyric_excerpt",
             "recommended_visual",
             "visual",
-            "section",
-            "song_section",
         ]
     ).lower()
+    if any(phrase in text for phrase in PROTAGONIST_VISUAL_PHRASES):
+        return True
     tokens = set(re.findall(r"[a-z]+", text))
     return any(term in tokens for term in PROTAGONIST_TERMS)
 
@@ -264,7 +268,6 @@ def generate_still_image(
                     image=reference_file,
                     prompt=prompt,
                     size="1536x1024",
-                    input_fidelity="high",
                 )
         else:
             response = openai_client.images.generate(

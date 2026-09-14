@@ -133,6 +133,28 @@ def test_storyboard_survives_round_trip():
     assert scene["excluded"] is False
 
 
+def test_older_project_without_contains_protagonist_backfills_conservatively():
+    with TemporaryDirectory() as temp_dir:
+        state = sample_state(Path(temp_dir))
+        state["storyboard"]["scenes"] = [
+            {
+                "scene_id": 1,
+                "recommended_visual": "weathered drifter on dusty road",
+            },
+            {
+                "scene_id": 2,
+                "lyric_excerpt": "He was hardened by living",
+                "recommended_visual": "empty desert landscape",
+            },
+        ]
+        package = create_project_archive(state)
+        restored = load_project_archive(package, Path(temp_dir) / "restored")
+
+    first, second = restored["storyboard"]["scenes"]
+    assert first["contains_protagonist"] is True
+    assert second["contains_protagonist"] is False
+
+
 def test_api_keys_are_never_serialized():
     with TemporaryDirectory() as temp_dir:
         state = sample_state(Path(temp_dir))

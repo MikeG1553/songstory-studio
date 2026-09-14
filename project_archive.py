@@ -22,6 +22,17 @@ SECRET_FIELD_NAMES = {
     "secrets",
 }
 
+PROTAGONIST_VISUAL_PHRASES = {
+    "protagonist",
+    "bounty hunter",
+    "drifter",
+    "gunslinger",
+    "gunman",
+    "cowboy",
+    "rider",
+    "outlaw",
+}
+
 
 class ProjectArchiveError(ValueError):
     pass
@@ -67,6 +78,28 @@ def _with_asset(data: dict[str, Any], path_key: str, archive_path: str) -> dict[
     updated = deepcopy(data)
     updated[f"{path_key}_archive_asset"] = archive_path
     return updated
+
+
+def _infer_contains_protagonist(scene: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(scene.get(key, ""))
+        for key in [
+            "recommended_visual",
+            "visual",
+        ]
+    ).lower()
+    return any(phrase in text for phrase in PROTAGONIST_VISUAL_PHRASES)
+
+
+def _backfill_contains_protagonist(storyboard: Any) -> None:
+    if not isinstance(storyboard, dict):
+        return
+    scenes = storyboard.get("scenes")
+    if not isinstance(scenes, list):
+        return
+    for scene in scenes:
+        if isinstance(scene, dict) and "contains_protagonist" not in scene:
+            scene["contains_protagonist"] = _infer_contains_protagonist(scene)
 
 
 def build_project_manifest(session_state: Any) -> dict[str, Any]:
@@ -176,6 +209,7 @@ def load_project_archive(package: bytes, project_dir: str | Path) -> dict[str, A
             manifest = json.loads(archive.read(PROJECT_MANIFEST).decode("utf-8"))
             if manifest.get("project_version") != PROJECT_ARCHIVE_VERSION:
                 raise ProjectArchiveError("Invalid SongStory project: unsupported project version.")
+            _backfill_contains_protagonist(manifest.get("storyboard"))
 
             audio_asset = manifest.get("assets", {}).get("audio_path")
             audio_path = _extract_asset(archive, manifest, audio_asset, project_path)

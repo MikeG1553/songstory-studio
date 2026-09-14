@@ -12,6 +12,7 @@ from typing import Any
 
 from directors_bible import apply_directors_bible
 from hybrid_media import text_overlay
+from image_generation import scene_includes_protagonist
 
 
 @dataclass
@@ -725,6 +726,7 @@ def heuristic_storyboard(
                 "excluded": False,
             }
         )
+        scenes[-1]["contains_protagonist"] = scene_includes_protagonist(scenes[-1])
 
     storyboard = {
         "concept": (
@@ -988,8 +990,7 @@ def normalize_storyboard(
                 section,
             )
 
-        scenes.append(
-            {
+        normalized_scene = {
                 "scene": index,
                 "scene_id": int(item.get("scene_id") or item.get("scene") or index),
                 "section": section,
@@ -1056,7 +1057,11 @@ def normalize_storyboard(
                 "text_overlay": item.get("text_overlay") or text_overlay(),
                 "excluded": bool(item.get("excluded", False)),
             }
-        )
+        if "contains_protagonist" in item:
+            normalized_scene["contains_protagonist"] = bool(item.get("contains_protagonist"))
+        else:
+            normalized_scene["contains_protagonist"] = scene_includes_protagonist(normalized_scene)
+        scenes.append(normalized_scene)
 
     data["scenes"] = scenes
     return apply_directors_bible(data)

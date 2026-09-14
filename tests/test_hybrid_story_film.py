@@ -78,6 +78,7 @@ def test_sequences_include_v06_source_and_overlay_metadata():
     assert scene["recommended_visual"]
     assert scene["preferred_source_type"] in {"stock_video", "generated_still", "either"}
     assert scene["text_overlay"]["position"] == "lower_third"
+    assert "contains_protagonist" in scene
 
 
 def test_generated_still_prompt_uses_bible_and_scene_context():
@@ -193,6 +194,7 @@ def test_protagonist_reference_is_used_for_protagonist_scene_prompt():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 7,
+        "contains_protagonist": True,
         "story_purpose": "The weathered male drifter walks toward judgment.",
         "recommended_visual": "weathered male drifter on dusty road",
     }
@@ -215,6 +217,7 @@ def test_protagonist_reference_is_not_required_for_landscape_scene():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 8,
+        "contains_protagonist": False,
         "section": "Instrumental Break",
         "story_purpose": "Set the scale of the empty frontier.",
         "recommended_visual": "wide storm clouds over empty desert landscape",
@@ -236,6 +239,7 @@ def test_hybrid_generated_still_receives_reference_for_protagonist_scene():
     scene = dict(
         storyboard["scenes"][0],
         preferred_source_type="generated_still",
+        contains_protagonist=True,
         recommended_visual="weathered male drifter on dusty road",
     )
 
@@ -258,6 +262,7 @@ def test_hybrid_generated_still_does_not_require_reference_for_landscape_scene()
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 12,
+        "contains_protagonist": False,
         "section": "Instrumental Break",
         "story_purpose": "Set the scale of the empty frontier.",
         "recommended_visual": "wide storm clouds over empty desert landscape",
@@ -318,6 +323,7 @@ def test_reference_image_file_is_passed_to_openai_edit_call():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 22,
+        "contains_protagonist": True,
         "story_purpose": "The weathered male drifter faces judgment.",
         "recommended_visual": "weathered male drifter on dusty road",
     }
@@ -347,6 +353,7 @@ def test_protagonist_reference_workflow_uses_reference_model():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 23,
+        "contains_protagonist": True,
         "story_purpose": "The outlaw rides into the frontier town.",
         "recommended_visual": "rugged outlaw bounty hunter imagery",
     }
@@ -367,7 +374,7 @@ def test_protagonist_reference_workflow_uses_reference_model():
 
     edit_call = fake_client.images.edit_calls[0]
     assert edit_call["model"] == REFERENCE_IMAGE_MODEL
-    assert edit_call["input_fidelity"] == "high"
+    assert "input_fidelity" not in edit_call
     assert result["generation_metadata"]["requested_image_model"] == DEFAULT_IMAGE_MODEL
     assert result["generation_metadata"]["actual_image_model"] == REFERENCE_IMAGE_MODEL
     assert result["generation_metadata"]["uses_protagonist_reference"] is True
@@ -377,6 +384,7 @@ def test_non_protagonist_scene_uses_text_generation_without_reference():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 24,
+        "contains_protagonist": False,
         "section": "Instrumental Break",
         "story_purpose": "Set the scale of the empty frontier.",
         "recommended_visual": "wide storm clouds over empty desert landscape",
@@ -408,6 +416,7 @@ def test_reference_edit_failure_returns_needs_attention_without_fallback():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 25,
+        "contains_protagonist": True,
         "story_purpose": "The drifter stands alone at the graveyard.",
         "recommended_visual": "weathered male drifter in old church graveyard",
     }
@@ -438,6 +447,7 @@ def test_generate_decodes_b64_json_without_response_format_argument():
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 27,
+        "contains_protagonist": False,
         "section": "Instrumental Break",
         "story_purpose": "Set the scale of the empty frontier.",
         "recommended_visual": "wide storm clouds over empty desert landscape",
@@ -465,6 +475,7 @@ def test_ordinary_generation_bad_request_returns_needs_attention_without_crashin
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 28,
+        "contains_protagonist": False,
         "section": "Instrumental Break",
         "story_purpose": "Set the scale of the empty frontier.",
         "recommended_visual": "wide storm clouds over empty desert landscape",
@@ -493,6 +504,7 @@ def test_reference_generation_metadata_records_resulting_path_and_reference_iden
     storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
     scene = {
         "scene_id": 26,
+        "contains_protagonist": True,
         "story_purpose": "The bounty hunter turns toward the road.",
         "recommended_visual": "rugged bounty hunter on dusty road",
     }
@@ -520,6 +532,111 @@ def test_reference_generation_metadata_records_resulting_path_and_reference_iden
     assert metadata["generation_mode"] == "reference_edit"
     assert metadata["reference_image_identifier"] == str(reference_path)
     assert result["generated_image_path"] == str(output_path)
+
+
+def test_contains_protagonist_true_uses_reference_edit():
+    storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
+    scene = {
+        "scene_id": 29,
+        "contains_protagonist": True,
+        "story_purpose": "He remembers the road.",
+        "recommended_visual": "empty road at sunset",
+    }
+    fake_client = FakeOpenAIClient()
+
+    with TemporaryDirectory() as temp_dir:
+        reference_path = Path(temp_dir) / "reference.png"
+        reference_path.write_bytes(b"reference bytes")
+        generate_still_image(
+            scene,
+            storyboard["directors_bible"],
+            Path(temp_dir) / "scene.png",
+            api_key="test-key",
+            protagonist_reference={"reference_image_path": str(reference_path), "approved": True},
+            openai_client=fake_client,
+        )
+
+    assert fake_client.images.edit_calls
+    assert not fake_client.images.generate_calls
+
+
+def test_contains_protagonist_false_uses_flare_without_reference_even_with_character_words():
+    storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
+    scene = {
+        "scene_id": 30,
+        "contains_protagonist": False,
+        "story_purpose": "He is gone and his memory hangs over the scene.",
+        "recommended_visual": "empty frontier road where a man once stood",
+    }
+    fake_client = FakeOpenAIClient()
+
+    with TemporaryDirectory() as temp_dir:
+        reference_path = Path(temp_dir) / "reference.png"
+        reference_path.write_bytes(b"reference bytes")
+        result = generate_still_image(
+            scene,
+            storyboard["directors_bible"],
+            Path(temp_dir) / "scene.png",
+            api_key="test-key",
+            model=DEFAULT_IMAGE_MODEL,
+            protagonist_reference={"reference_image_path": str(reference_path), "approved": True},
+            openai_client=fake_client,
+        )
+
+    assert fake_client.images.generate_calls
+    assert not fake_client.images.edit_calls
+    assert fake_client.images.generate_calls[0]["model"] == DEFAULT_IMAGE_MODEL
+    assert result["generation_metadata"]["uses_protagonist_reference"] is False
+
+
+def test_pronouns_and_man_alone_do_not_trigger_protagonist_reference():
+    scene = {
+        "scene_id": 31,
+        "story_purpose": "He loses what was his.",
+        "lyric_excerpt": "He was hardened by living",
+        "recommended_visual": "empty saloon doorway after a man left town",
+    }
+
+    assert not scene_includes_protagonist(scene)
+
+
+def test_one_failed_reference_scene_does_not_mark_unrelated_scene_failed():
+    storyboard = heuristic_storyboard(LAY_YOUR_SOUL_DOWN, 220)
+    failing_client = FakeOpenAIClient(fail_edit=True)
+    successful_client = FakeOpenAIClient()
+
+    with TemporaryDirectory() as temp_dir:
+        reference_path = Path(temp_dir) / "reference.png"
+        reference_path.write_bytes(b"reference bytes")
+        failed = generate_still_image(
+            {
+                "scene_id": 32,
+                "contains_protagonist": True,
+                "recommended_visual": "rugged outlaw in western graveyard",
+            },
+            storyboard["directors_bible"],
+            Path(temp_dir) / "failed.png",
+            api_key="test-key",
+            protagonist_reference={"reference_image_path": str(reference_path), "approved": True},
+            openai_client=failing_client,
+        )
+        succeeded = generate_still_image(
+            {
+                "scene_id": 33,
+                "contains_protagonist": False,
+                "recommended_visual": "storm clouds over empty desert",
+            },
+            storyboard["directors_bible"],
+            Path(temp_dir) / "succeeded.png",
+            api_key="test-key",
+            protagonist_reference={"reference_image_path": str(reference_path), "approved": True},
+            openai_client=successful_client,
+        )
+
+    assert failed["status"] == "Needs Attention"
+    assert succeeded["status"] == "generated"
+    assert successful_client.images.generate_calls
+    assert not successful_client.images.edit_calls
 
 
 def test_animate_still_image_invokes_ffmpeg_with_zoompan():
